@@ -71,10 +71,15 @@ async def order_menu(call: CallbackQuery):
     kb.button(text="Реакции", callback_data="reactions")
     kb.adjust(1)
     if call.message.photo:
-    await call.message.edit_caption("Выберите услугу:", reply_markup=kb.as_markup())
+    await call.message.edit_caption(
+        "Выберите услугу:",
+        reply_markup=kb.as_markup()
+    )
 else:
-    await call.message.edit_text("Выберите услугу:", reply_markup=kb.as_markup())
-    
+    await call.message.edit_text(
+        "Выберите услугу:",
+        reply_markup=kb.as_markup()
+    )
 
 @dp.callback_query(F.data.in_(["subscribers", "views", "reactions"]))
 async def choose_service(call: CallbackQuery, state: FSMContext):
