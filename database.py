@@ -5,7 +5,7 @@ DB_PATH = "bot_database.db"
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
-        # Создаём таблицу users, если её нет
+        # Таблица пользователей (базовая)
         await db.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -13,11 +13,10 @@ async def init_db():
             )
         ''')
 
-        # Проверяем, есть ли колонка accepted_terms
+        # Проверяем наличие колонки accepted_terms и добавляем, если нужно
         try:
             await db.execute('SELECT accepted_terms FROM users LIMIT 1')
         except aiosqlite.OperationalError:
-            # Если нет — добавляем
             await db.execute('ALTER TABLE users ADD COLUMN accepted_terms INTEGER DEFAULT 0')
             logging.info("Column 'accepted_terms' added to users table.")
 
@@ -46,5 +45,85 @@ async def init_db():
         await db.commit()
     logging.info("Database initialized.")
 
-# Остальные функции без изменений (add_user, is_banned, ban_user, unban_user, has_accepted_terms, accept_terms, get_all_users, create_order, get_order, update_order_status, get_all_admins, add_admin, remove_admin, is_admin)
-# ... (скопируйте их из предыдущего ответа)
+# ====== Пользователи ======
+async def add_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (user_id,))
+        await db.commit()
+
+async def is_banned(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('SELECT banned FROM users WHERE user_id = ?', (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row and row[0] == 1
+
+async def ban_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('UPDATE users SET banned = 1 WHERE user_id = ?', (user_id,))
+        await db.commit()
+
+async def unban_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('UPDATE users SET banned = 0 WHERE user_id = ?', (user_id,))
+        await db.commit()
+
+async def has_accepted_terms(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('SELECT accepted_terms FROM users WHERE user_id = ?', (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row and row[0] == 1
+
+async def accept_terms(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('UPDATE users SET accepted_terms = 1 WHERE user_id = ?', (user_id,))
+        await db.commit()
+
+async def get_all_users():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('SELECT user_id FROM users') as cursor:
+            rows = await cursor.fetchall()
+            return [row[0] for row in rows]
+
+# ====== Заказы ======
+async def create_order(order_id: str, user_id: int, service: str, quantity: int, price: float, link: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            'INSERT INTO orders (order_id, user_id, service, quantity, price, link, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (order_id, user_id, service, quantity, price, link, 'NEW')
+        )
+        await db.commit()
+
+async def get_order(order_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('SELECT * FROM orders WHERE order_id = ?', (order_id,)) as cursor:
+            return await cursor.fetchone()
+
+async def update_order_status(order_id: str, status: str, comment: str = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            'UPDATE orders SET status = ?, comment = ? WHERE order_id = ?',
+            (status, comment, order_id)
+        )
+        await db.commit()
+
+# ====== Администраторы ======
+async def add_admin(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('INSERT OR IGNORE INTO admins (user_id) VALUES (?)', (user_id,))
+        await db.commit()
+
+async def remove_admin(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('DELETE FROM admins WHERE user_id = ?', (user_id,))
+        await db.commit()
+
+async def is_admin(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('SELECT 1 FROM admins WHERE user_id = ?', (user_id,)) as cursor:
+            return await cursor.fetchone() is not None
+
+async def get_all_admins():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('SELECT user_id FROM admins') as cursor:
+            rows = await cursor.fetchall()
+            return [row[0] for row in rows]
