@@ -9,7 +9,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramForbiddenError
-from config import BOT_TOKEN, ADMINS, CARD_DETAILS, CRYPTO_DETAILS
+from config import BOT_TOKEN, ADMINS as STATIC_ADMINS, CARD_DETAILS, CRYPTO_DETAILS
 import database
 
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +27,9 @@ class CalcState(StatesGroup):
 class DeclineReason(StatesGroup):
     waiting_reason = State()
 
+class BroadcastState(StatesGroup):
+    waiting_message = State()
+
 # ====== Цены ======
 PRICES = {
     "subscribers": 0.02,
@@ -38,23 +41,38 @@ PRICES = {
 def generate_order_id(length=6):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
-# ====== Проверка бана ======
-async def check_ban(user_id: int) -> bool:
+# ====== Проверка бана и соглашения ======
+async def check_ban_and_terms(user_id: int) -> bool:
+    """Возвращает True, если доступ запрещён (бан или не приняты условия)."""
     banned = await database.is_banned(user_id)
     if banned:
         await bot.send_message(user_id, "❌ Вы заблокированы.")
         return True
+
+    if not await database.has_accepted_terms(user_id):
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✅ Принять договор оферты и политику конфиденциальности", callback_data="accept_terms")
+        await bot.send_message(
+            user_id,
+            "Для использования бота необходимо принять договор оферты и политику конфиденциальности.\n\n"
+            "[Договор оферты](https://example.com/offer)\n"
+            "[Политика конфиденциальности](https://example.com/privacy)",
+            reply_markup=kb.as_markup(),
+            parse_mode="Markdown"
+        )
+        return True
     return False
 
-# ====== Функция показа главного меню ======
-async def show_main_menu(chat_id: int, call: CallbackQuery = None):
-    """Отправляет главное меню (с фото или текстом). Если передан call, удаляет его сообщение."""
-    if call:
-        try:
-            await call.message.delete()
-        except Exception:
-            pass
+# ====== Принятие соглашения ======
+@dp.callback_query(F.data == "accept_terms")
+async def accept_terms(call: CallbackQuery):
+    await call.answer()
+    await database.accept_terms(call.from_user.id)
+    await call.message.edit_text("✅ Вы приняли договор оферты и политику конфиденциальности. Теперь вы можете пользоваться ботом.")
+    await show_main_menu(call.from_user.id)
 
+# ====== Главное меню ======
+async def show_main_menu(chat_id: int):
     kb = InlineKeyboardBuilder()
     kb.button(text="🛒 Заказать накрутку", callback_data="order")
     kb.button(text="🧮 Калькулятор", callback_data="calc")
@@ -72,7 +90,7 @@ async def show_main_menu(chat_id: int, call: CallbackQuery = None):
 @dp.message(Command("start"))
 async def start_handler(message: Message):
     await database.add_user(message.from_user.id)
-    if await check_ban(message.from_user.id):
+    if await check_ban_and_terms(message.from_user.id):
         return
     await show_main_menu(message.chat.id)
 
@@ -80,7 +98,7 @@ async def start_handler(message: Message):
 @dp.callback_query(F.data == "order")
 async def order_menu(call: CallbackQuery):
     await call.answer()
-    if await check_ban(call.from_user.id):
+    if await check_ban_and_terms(call.from_user.id):
         return
     kb = InlineKeyboardBuilder()
     kb.button(text="Подписчики", callback_data="subscribers")
@@ -97,7 +115,7 @@ async def order_menu(call: CallbackQuery):
 @dp.callback_query(F.data.in_(["subscribers", "views", "reactions"]))
 async def choose_service(call: CallbackQuery, state: FSMContext):
     await call.answer()
-    if await check_ban(call.from_user.id):
+    if await check_ban_and_terms(call.from_user.id):
         return
     await state.update_data(service=call.data)
     await call.message.answer("Введите количество:")
@@ -105,7 +123,7 @@ async def choose_service(call: CallbackQuery, state: FSMContext):
 
 @dp.message(OrderState.waiting_quantity)
 async def get_quantity(message: Message, state: FSMContext):
-    if await check_ban(message.from_user.id):
+    if await check_ban_and_terms(message.from_user.id):
         return await state.clear()
     if not message.text or not message.text.isdigit():
         return await message.answer("Введите число!")
@@ -119,7 +137,7 @@ async def get_quantity(message: Message, state: FSMContext):
 
 @dp.message(OrderState.waiting_link)
 async def get_link(message: Message, state: FSMContext):
-    if await check_ban(message.from_user.id):
+    if await check_ban_and_terms(message.from_user.id):
         return await state.clear()
     link = message.text.strip()
     if not link.startswith(("http://", "https://")):
@@ -162,7 +180,7 @@ async def get_link(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("check_"))
 async def check_payment(call: CallbackQuery):
     await call.answer()
-    if await check_ban(call.from_user.id):
+    if await check_ban_and_terms(call.from_user.id):
         return
     order_id = call.data.split("_")[1]
     order = await database.get_order(order_id)
@@ -188,7 +206,8 @@ async def check_payment(call: CallbackQuery):
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Принять", callback_data=f"accept_{order_id}")
     kb.button(text="❌ Отклонить", callback_data=f"decline_{order_id}")
-    for admin in ADMINS:
+    admins = await database.get_all_admins()
+    for admin in admins:
         try:
             await bot.send_message(admin, text_for_admin, reply_markup=kb.as_markup())
         except Exception as e:
@@ -197,7 +216,7 @@ async def check_payment(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("accept_"))
 async def accept_order(call: CallbackQuery):
     await call.answer()
-    if call.from_user.id not in ADMINS:
+    if not await database.is_admin(call.from_user.id):
         return
     order_id = call.data.split("_")[1]
     order = await database.get_order(order_id)
@@ -227,7 +246,7 @@ async def accept_order(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("decline_"))
 async def decline_order_start(call: CallbackQuery, state: FSMContext):
     await call.answer()
-    if call.from_user.id not in ADMINS:
+    if not await database.is_admin(call.from_user.id):
         return
     order_id = call.data.split("_")[1]
     order = await database.get_order(order_id)
@@ -241,7 +260,7 @@ async def decline_order_start(call: CallbackQuery, state: FSMContext):
 
 @dp.message(DeclineReason.waiting_reason)
 async def decline_order_reason(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMINS:
+    if not await database.is_admin(message.from_user.id):
         return await state.clear()
     reason = message.text.strip()
     data = await state.get_data()
@@ -261,7 +280,7 @@ async def decline_order_reason(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "calc")
 async def calc_menu(call: CallbackQuery):
     await call.answer()
-    if await check_ban(call.from_user.id):
+    if await check_ban_and_terms(call.from_user.id):
         return
     kb = InlineKeyboardBuilder()
     kb.button(text="Подписчики", callback_data="calc_subscribers")
@@ -278,7 +297,7 @@ async def calc_menu(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("calc_"))
 async def calc_choose(call: CallbackQuery, state: FSMContext):
     await call.answer()
-    if await check_ban(call.from_user.id):
+    if await check_ban_and_terms(call.from_user.id):
         return
     service = call.data.split("_")[1]
     await state.update_data(service=service)
@@ -287,7 +306,7 @@ async def calc_choose(call: CallbackQuery, state: FSMContext):
 
 @dp.message(CalcState.waiting_quantity)
 async def calc_result(message: Message, state: FSMContext):
-    if await check_ban(message.from_user.id):
+    if await check_ban_and_terms(message.from_user.id):
         return await state.clear()
     if not message.text or not message.text.isdigit():
         return await message.answer("Введите число!")
@@ -301,11 +320,11 @@ async def calc_result(message: Message, state: FSMContext):
     await message.answer(f"💰 Стоимость будет: {price} руб.")
     await state.clear()
 
-# ====== ТЕХ. ПОДДЕРЖКА (просто текст) ======
+# ====== ТЕХ. ПОДДЕРЖКА ======
 @dp.callback_query(F.data == "support")
 async def support(call: CallbackQuery):
     await call.answer()
-    if await check_ban(call.from_user.id):
+    if await check_ban_and_terms(call.from_user.id):
         return
     kb = InlineKeyboardBuilder()
     kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
@@ -320,7 +339,7 @@ async def support(call: CallbackQuery):
 @dp.callback_query(F.data == "faq")
 async def faq(call: CallbackQuery):
     await call.answer()
-    if await check_ban(call.from_user.id):
+    if await check_ban_and_terms(call.from_user.id):
         return
     kb = InlineKeyboardBuilder()
     kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
@@ -341,14 +360,23 @@ async def faq(call: CallbackQuery):
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main(call: CallbackQuery):
     await call.answer()
-    if await check_ban(call.from_user.id):
+    if await check_ban_and_terms(call.from_user.id):
         return
-    await show_main_menu(call.from_user.id, call)
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await show_main_menu(call.from_user.id)
 
 # ====== АДМИН КОМАНДЫ ======
+async def is_admin_from_db_or_config(user_id: int) -> bool:
+    if user_id in STATIC_ADMINS:
+        return True
+    return await database.is_admin(user_id)
+
 @dp.message(Command("ban"))
 async def ban_cmd(message: Message):
-    if message.from_user.id not in ADMINS:
+    if not await is_admin_from_db_or_config(message.from_user.id):
         return
     args = message.text.split()
     if len(args) < 2:
@@ -362,7 +390,7 @@ async def ban_cmd(message: Message):
 
 @dp.message(Command("unban"))
 async def unban_cmd(message: Message):
-    if message.from_user.id not in ADMINS:
+    if not await is_admin_from_db_or_config(message.from_user.id):
         return
     args = message.text.split()
     if len(args) < 2:
@@ -376,7 +404,7 @@ async def unban_cmd(message: Message):
 
 @dp.message(Command("search"))
 async def search_order(message: Message):
-    if message.from_user.id not in ADMINS:
+    if not await is_admin_from_db_or_config(message.from_user.id):
         return
     args = message.text.split()
     if len(args) < 2:
@@ -388,9 +416,67 @@ async def search_order(message: Message):
     else:
         await message.answer("Заказ не найден.")
 
+@dp.message(Command("addadmin"))
+async def add_admin(message: Message):
+    if not await is_admin_from_db_or_config(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.answer("Использование: /addadmin <user_id>")
+    try:
+        user_id = int(args[1])
+    except ValueError:
+        return await message.answer("ID должен быть числом.")
+    await database.add_admin(user_id)
+    await message.answer(f"Пользователь {user_id} добавлен в администраторы.")
+
+@dp.message(Command("deladmin"))
+async def remove_admin(message: Message):
+    if not await is_admin_from_db_or_config(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.answer("Использование: /deladmin <user_id>")
+    try:
+        user_id = int(args[1])
+    except ValueError:
+        return await message.answer("ID должен быть числом.")
+    await database.remove_admin(user_id)
+    await message.answer(f"Пользователь {user_id} удалён из администраторов.")
+
+@dp.message(Command("all"))
+async def broadcast_command(message: Message, state: FSMContext):
+    if not await is_admin_from_db_or_config(message.from_user.id):
+        return
+    await message.answer("Отправьте сообщение для рассылки всем пользователям (можно с медиа).")
+    await state.set_state(BroadcastState.waiting_message)
+
+@dp.message(BroadcastState.waiting_message)
+async def broadcast_message(message: Message, state: FSMContext):
+    if not await is_admin_from_db_or_config(message.from_user.id):
+        return await state.clear()
+    users = await database.get_all_users()
+    await message.answer(f"Начинаю рассылку {len(users)} пользователям...")
+    sent = 0
+    blocked = 0
+    for user_id in users:
+        try:
+            await bot.copy_message(chat_id=user_id, from_chat_id=message.chat.id, message_id=message.message_id)
+            sent += 1
+            await asyncio.sleep(0.05)
+        except TelegramForbiddenError:
+            blocked += 1
+        except Exception as e:
+            logging.error(f"Failed to send to {user_id}: {e}")
+    await message.answer(f"Рассылка завершена.\nОтправлено: {sent}\nЗаблокировали бота: {blocked}")
+    await state.clear()
+
 # ====== RUN ======
 async def main():
     await database.init_db()
+    # Добавляем статических админов в БД при старте
+    for admin_id in STATIC_ADMINS:
+        await database.add_admin(admin_id)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
