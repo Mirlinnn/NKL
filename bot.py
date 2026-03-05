@@ -93,7 +93,12 @@ async def order_menu(call: CallbackQuery):
     kb.button(text="Просмотры", callback_data="views")
     kb.button(text="Реакции", callback_data="reactions")
     kb.adjust(1)
-    await call.message.edit_text("Выберите услугу:", reply_markup=kb.as_markup())
+    # Удаляем старое сообщение (с фото) и отправляем новое текстовое
+    try:
+        await call.message.delete()
+    except Exception:
+        pass  # если не удалось удалить (например, слишком старое) — игнорируем
+    await call.message.answer("Выберите услугу:", reply_markup=kb.as_markup())
 
 
 @dp.callback_query(F.data.in_(["subscribers", "views", "reactions"]))
@@ -285,8 +290,11 @@ async def calc_menu(call: CallbackQuery):
     kb.button(text="Просмотры", callback_data="calc_views")
     kb.button(text="Реакции", callback_data="calc_reactions")
     kb.adjust(1)
-
-    await call.message.edit_text("Выберите услугу:", reply_markup=kb.as_markup())
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await call.message.answer("Выберите услугу:", reply_markup=kb.as_markup())
 
 
 @dp.callback_query(F.data.startswith("calc_"))
@@ -381,7 +389,11 @@ async def faq(call: CallbackQuery):
     await call.answer()
     if await check_ban(call.from_user.id):
         return
-    await call.message.edit_text("""
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+    await call.message.answer("""
 ❓ Частые вопросы:
 
 1. Когда начнётся накрутка?
