@@ -32,9 +32,9 @@ class BroadcastState(StatesGroup):
 
 # ====== Цены ======
 PRICES = {
-    "subscribers": 0.02,
-    "views": 0.01,
-    "reactions": 0.01
+    "subscribers": 0.2,
+    "views": 0.1,
+    "reactions": 0.1
 }
 
 # ====== Генерация ID заказа ======
@@ -80,15 +80,22 @@ async def show_main_menu(chat_id: int):
     kb.button(text="❓ Частые вопросы", callback_data="faq")
     kb.adjust(1)
 
-    text = """
-<b>Приветствую!</b><emoji document_id=5877700484453634587>✈️</emoji><b>
-Добро пожаловать в бота для накрутки статистики пользователей, просмотров и реакций
+    # ВАЖНО: Замените эти ID на те, которые соответствуют вашим эмодзи!
+    # Примеры ID из статьи, они могут не совпадать с вашими.
+    EMOJI_ID_PLANE = "5877700484453634587"   # ID для ✈️
+    EMOJI_ID_USER = "5870994129244131212"     # ID для 👤
+    EMOJI_ID_CHART = "5870891312022032055"    # ID для 📈
 
-</b><blockquote><emoji document_id=5870994129244131212>👤</emoji><b>Тех.поддержка: @
-</b><emoji document_id=5870891312022032055>📈</emoji><b>Наш канал: @</b></blockquote>
+    text = f"""
+<b>Приветствую!</b> <tg-emoji emoji-id="{EMOJI_ID_PLANE}">✈️</tg-emoji>
+<b>Добро пожаловать в бота для накрутки статистики пользователей, просмотров и реакций
+
+</b><blockquote><tg-emoji emoji-id="{EMOJI_ID_USER}">👤</tg-emoji> <b>Тех.поддержка: @
+</b><tg-emoji emoji-id="{EMOJI_ID_CHART}">📈</tg-emoji> <b>Наш канал: @</b></blockquote>
 
 <a href="https://t.me/">Договор оферты</a> • <a href="https://t.me/">Пользовательское соглашение</a>
     """
+
     try:
         photo = FSInputFile("photo.jpg")
         await bot.send_photo(chat_id, photo, caption=text, reply_markup=kb.as_markup(), parse_mode="HTML")
