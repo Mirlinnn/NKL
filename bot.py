@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import random
+import string
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -32,6 +34,10 @@ class TicketState(StatesGroup):
     waiting_text = State()
 
 
+class DeclineReason(StatesGroup):
+    waiting_reason = State()
+
+
 # ====== Цены ======
 
 PRICES = {
@@ -39,6 +45,12 @@ PRICES = {
     "views": 0.1,
     "reactions": 0.1
 }
+
+
+# ====== Генерация ID заказа ======
+def generate_order_id(length=6):
+    """Генерирует случайный код из заглавных букв и цифр"""
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 
 # ====== Проверка бана ======
@@ -97,7 +109,7 @@ async def order_menu(call: CallbackQuery):
     try:
         await call.message.delete()
     except Exception:
-        pass  # если не удалось удалить (например, слишком старое) — игнорируем
+        pass
     await call.message.answer("Выберите услугу:", reply_markup=kb.as_markup())
 
 
@@ -143,8 +155,12 @@ async def get_link(message: Message, state: FSMContext):
 
     data = await state.get_data()
 
+    # Генерируем уникальный ID заказа
+    order_id = generate_order_id()
+
     try:
-        order_id = await database.create_order(
+        await database.create_order(
+            order_id,
             message.from_user.id,
             data["service"],
             data["quantity"],
@@ -187,19 +203,31 @@ async def check_payment(call: CallbackQuery):
     if await check_ban(call.from_user.id):
         return
 
-    try:
-        order_id = int(call.data.split("_")[1])
-    except ValueError:
-        return await call.message.answer("Некорректный номер заказа.")
+    order_id = call.data.split("_")[1]  # теперь это строка
 
     # Проверим, не обработан ли уже заказ
     order = await database.get_order(order_id)
     if not order:
         return await call.message.answer("Заказ не найден.")
-    if order[3] not in ("NEW", "PENDING"):  # предполагаем, что статус хранится в 4-м столбце
+    if order[3] not in ("NEW", "PENDING"):  # статус в 4-м столбце
         return await call.message.answer("Этот заказ уже обработан.")
 
     await call.message.answer("⏳ Заказ обрабатывается...")
+
+    # Формируем детальную информацию для админов
+    service_map = {"subscribers": "Подписчики", "views": "Просмотры", "reactions": "Реакции"}
+    service_name = service_map.get(order[2], order[2])  # услуга в 3-м столбце
+    user_id = order[1]
+    username = call.from_user.username or "нет username"
+    text_for_admin = f"""
+# НОВЫЙ ЗАКАЗ
+🆔 Номер заказа: {order_id}
+👤 Пользователь: {user_id} (@{username})
+📦 Услуга: {service_name}
+🔢 Количество: {order[3]}  # quantity
+💰 Сумма: {order[4]} руб.
+🔗 Ссылка: {order[5]}
+    """
 
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Принять", callback_data=f"accept_{order_id}")
@@ -209,7 +237,7 @@ async def check_payment(call: CallbackQuery):
         try:
             await bot.send_message(
                 admin,
-                f"#НОВЫЙ_ЗАКАЗ\nID: {order_id}",
+                text_for_admin,
                 reply_markup=kb.as_markup()
             )
         except Exception as e:
@@ -222,60 +250,95 @@ async def accept_order(call: CallbackQuery):
     if call.from_user.id not in ADMINS:
         return
 
-    try:
-        order_id = int(call.data.split("_")[1])
-    except ValueError:
-        return await call.message.answer("Некорректный номер заказа.")
+    order_id = call.data.split("_")[1]
 
     order = await database.get_order(order_id)
     if not order:
         return await call.message.answer("Заказ не найден.")
+    if order[3] not in ("NEW", "PENDING"):
+        return await call.message.answer("Этот заказ уже обработан другим администратором.")
 
     # Обновляем статус
     await database.update_order_status(order_id, "ACCEPTED", "Принят")
 
-    # Убираем кнопки у админа
-    await call.message.edit_text(call.message.text, reply_markup=None)
+    # Убираем кнопки у текущего админа
+    await call.message.edit_text(call.message.text + "\n\n✅ Заказ принят.", reply_markup=None)
 
     # Уведомляем пользователя
     try:
-        await bot.send_message(order[1], "✅ Ваш заказ принят!")
+        await bot.send_message(order[1], f"✅ Ваш заказ №{order_id} принят и будет выполнен в ближайшее время.")
     except TelegramForbiddenError:
         logging.warning(f"User {order[1]} blocked the bot.")
     except Exception as e:
         logging.error(f"Error sending to user: {e}")
 
-    await call.message.answer("Заказ подтверждён.")
+    # Отправляем админу подтверждение выполнения (согласно требованию)
+    service_map = {"subscribers": "Подписчики", "views": "Просмотры", "reactions": "Реакции"}
+    service_name = service_map.get(order[2], order[2])
+    await call.message.answer(
+        f"✅ Заказ №{order_id} выполнен.\n"
+        f"👤 Пользователь: {order[1]}\n"
+        f"📦 Услуга: {service_name}\n"
+        f"🔢 Количество: {order[3]}\n"
+        f"💰 Сумма: {order[4]} руб.\n"
+        f"🔗 Ссылка: {order[5]}"
+    )
 
 
 @dp.callback_query(F.data.startswith("decline_"))
-async def decline_order(call: CallbackQuery):
+async def decline_order_start(call: CallbackQuery, state: FSMContext):
     await call.answer()
     if call.from_user.id not in ADMINS:
         return
 
-    try:
-        order_id = int(call.data.split("_")[1])
-    except ValueError:
-        return await call.message.answer("Некорректный номер заказа.")
+    order_id = call.data.split("_")[1]
 
     order = await database.get_order(order_id)
     if not order:
         return await call.message.answer("Заказ не найден.")
+    if order[3] not in ("NEW", "PENDING"):
+        return await call.message.answer("Этот заказ уже обработан другим администратором.")
 
-    await database.update_order_status(order_id, "DECLINED", "Отклонён")
+    # Сохраняем данные заказа в состоянии
+    await state.update_data(order_id=order_id, order=order)
 
-    # Убираем кнопки
-    await call.message.edit_text(call.message.text, reply_markup=None)
+    await call.message.answer("Введите причину отклонения заказа (одним сообщением):")
+    await state.set_state(DeclineReason.waiting_reason)
 
+
+@dp.message(DeclineReason.waiting_reason)
+async def decline_order_reason(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMINS:
+        return await state.clear()
+
+    reason = message.text.strip()
+    data = await state.get_data()
+    order_id = data['order_id']
+    order = data['order']
+
+    # Обновляем статус заказа с указанием причины (можно хранить причину в отдельном поле или добавить в комментарий)
+    await database.update_order_status(order_id, "DECLINED", f"Отклонён: {reason}")
+
+    # Убираем кнопки у админа, который начал отклонение (если сообщение ещё существует)
     try:
-        await bot.send_message(order[1], "❌ Ваш заказ отклонён.")
+        # Найти предыдущее сообщение с кнопками? У нас сейчас нет ссылки на него.
+        # Можно просто отправить новое сообщение о результате.
+        pass
+    except Exception:
+        pass
+
+    # Уведомляем пользователя с указанием причины
+    try:
+        await bot.send_message(order[1], f"❌ Ваш заказ №{order_id} отклонён.\nПричина: {reason}")
     except TelegramForbiddenError:
         logging.warning(f"User {order[1]} blocked the bot.")
     except Exception as e:
         logging.error(f"Error sending to user: {e}")
 
-    await call.message.answer("Заказ отклонён.")
+    # Отправляем админу подтверждение отклонения с причиной
+    await message.answer(f"❌ Заказ №{order_id} отклонён.\nПричина: {reason}")
+
+    await state.clear()
 
 
 # ====== КАЛЬКУЛЯТОР ======
@@ -443,10 +506,7 @@ async def search_order(message: Message):
     args = message.text.split()
     if len(args) < 2:
         return await message.answer("Использование: /search <order_id>")
-    try:
-        order_id = int(args[1])
-    except ValueError:
-        return await message.answer("ID заказа должен быть числом.")
+    order_id = args[1]  # строка
     order = await database.get_order(order_id)
     if order:
         await message.answer(str(order))
