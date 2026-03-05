@@ -80,11 +80,20 @@ async def show_main_menu(chat_id: int):
     kb.button(text="❓ Частые вопросы", callback_data="faq")
     kb.adjust(1)
 
+    text = """
+<b>Приветствую!</b><emoji document_id=5877700484453634587>✈️</emoji><b>
+Добро пожаловать в бота для накрутки статистики пользователей, просмотров и реакций
+
+</b><blockquote><emoji document_id=5870994129244131212>👤</emoji><b>Тех.поддержка: @
+</b><emoji document_id=5870891312022032055>📈</emoji><b>Наш канал: @</b></blockquote>
+
+<a href="https://t.me/">Договор оферты</a> • <a href="https://t.me/">Пользовательское соглашение</a>
+    """
     try:
         photo = FSInputFile("photo.jpg")
-        await bot.send_photo(chat_id, photo, caption="Добро пожаловать в наш шоп 🚀", reply_markup=kb.as_markup())
+        await bot.send_photo(chat_id, photo, caption=text, reply_markup=kb.as_markup(), parse_mode="HTML")
     except FileNotFoundError:
-        await bot.send_message(chat_id, "Добро пожаловать в наш шоп 🚀", reply_markup=kb.as_markup())
+        await bot.send_message(chat_id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
 
 # ====== /start ======
 @dp.message(Command("start"))
