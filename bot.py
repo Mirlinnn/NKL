@@ -24,9 +24,6 @@ class OrderState(StatesGroup):
 class CalcState(StatesGroup):
     waiting_quantity = State()
 
-class TicketState(StatesGroup):
-    waiting_text = State()
-
 class DeclineReason(StatesGroup):
     waiting_reason = State()
 
@@ -49,23 +46,35 @@ async def check_ban(user_id: int) -> bool:
         return True
     return False
 
-# ====== /start ======
-@dp.message(Command("start"))
-async def start_handler(message: Message):
-    await database.add_user(message.from_user.id)
-    if await check_ban(message.from_user.id):
-        return
+# ====== Функция показа главного меню ======
+async def show_main_menu(chat_id: int, call: CallbackQuery = None):
+    """Отправляет главное меню (с фото или текстом). Если передан call, удаляет его сообщение."""
+    if call:
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+
     kb = InlineKeyboardBuilder()
     kb.button(text="🛒 Заказать накрутку", callback_data="order")
     kb.button(text="🧮 Калькулятор", callback_data="calc")
     kb.button(text="🛠 Тех. Поддержка", callback_data="support")
     kb.button(text="❓ Частые вопросы", callback_data="faq")
     kb.adjust(1)
+
     try:
         photo = FSInputFile("photo.jpg")
-        await message.answer_photo(photo, caption="Добро пожаловать в наш шоп 🚀", reply_markup=kb.as_markup())
+        await bot.send_photo(chat_id, photo, caption="Добро пожаловать в наш шоп 🚀", reply_markup=kb.as_markup())
     except FileNotFoundError:
-        await message.answer("Добро пожаловать в наш шоп 🚀", reply_markup=kb.as_markup())
+        await bot.send_message(chat_id, "Добро пожаловать в наш шоп 🚀", reply_markup=kb.as_markup())
+
+# ====== /start ======
+@dp.message(Command("start"))
+async def start_handler(message: Message):
+    await database.add_user(message.from_user.id)
+    if await check_ban(message.from_user.id):
+        return
+    await show_main_menu(message.chat.id)
 
 # ====== ЗАКАЗ ======
 @dp.callback_query(F.data == "order")
@@ -77,6 +86,7 @@ async def order_menu(call: CallbackQuery):
     kb.button(text="Подписчики", callback_data="subscribers")
     kb.button(text="Просмотры", callback_data="views")
     kb.button(text="Реакции", callback_data="reactions")
+    kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
     kb.adjust(1)
     try:
         await call.message.delete()
@@ -257,6 +267,7 @@ async def calc_menu(call: CallbackQuery):
     kb.button(text="Подписчики", callback_data="calc_subscribers")
     kb.button(text="Просмотры", callback_data="calc_views")
     kb.button(text="Реакции", callback_data="calc_reactions")
+    kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
     kb.adjust(1)
     try:
         await call.message.delete()
@@ -290,46 +301,20 @@ async def calc_result(message: Message, state: FSMContext):
     await message.answer(f"💰 Стоимость будет: {price} руб.")
     await state.clear()
 
-# ====== ТИКЕТЫ ======
+# ====== ТЕХ. ПОДДЕРЖКА (просто текст) ======
 @dp.callback_query(F.data == "support")
-async def support(call: CallbackQuery, state: FSMContext):
+async def support(call: CallbackQuery):
     await call.answer()
     if await check_ban(call.from_user.id):
         return
-    await call.message.answer("Опишите проблему одним сообщением:")
-    await state.set_state(TicketState.waiting_text)
-
-@dp.message(TicketState.waiting_text)
-async def send_ticket(message: Message, state: FSMContext):
-    if await check_ban(message.from_user.id):
-        return await state.clear()
-    await state.update_data(text=message.text)
     kb = InlineKeyboardBuilder()
-    kb.button(text="📨 Отправить тикет", callback_data="send_ticket")
-    kb.button(text="❌ Отмена", callback_data="cancel_ticket")
-    kb.adjust(1)
-    await message.answer("Отправить тикет?", reply_markup=kb.as_markup())
-
-@dp.callback_query(F.data == "send_ticket")
-async def ticket_to_admin(call: CallbackQuery, state: FSMContext):
-    await call.answer()
-    if await check_ban(call.from_user.id):
-        return await state.clear()
-    data = await state.get_data()
-    text = data.get("text", "Пустое сообщение")
-    for admin in ADMINS:
-        try:
-            await bot.send_message(admin, f"#ТИКЕТ от {call.from_user.id}\n{text}")
-        except Exception as e:
-            logging.error(f"Failed to send ticket to admin {admin}: {e}")
-    await call.message.edit_text("✅ Тикет отправлен.", reply_markup=None)
-    await state.clear()
-
-@dp.callback_query(F.data == "cancel_ticket")
-async def cancel_ticket(call: CallbackQuery, state: FSMContext):
-    await call.answer()
-    await state.clear()
-    await call.message.edit_text("Отменено.", reply_markup=None)
+    kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
+    await call.message.answer(
+        "📞 Связаться с поддержкой:\n\n"
+        "Напишите нам в Telegram: @support_username\n"
+        "Или на почту: support@example.com",
+        reply_markup=kb.as_markup()
+    )
 
 # ====== FAQ ======
 @dp.callback_query(F.data == "faq")
@@ -337,11 +322,10 @@ async def faq(call: CallbackQuery):
     await call.answer()
     if await check_ban(call.from_user.id):
         return
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
-    await call.message.answer("""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
+    await call.message.answer(
+        """
 ❓ Частые вопросы:
 
 1. Когда начнётся накрутка?
@@ -349,7 +333,17 @@ async def faq(call: CallbackQuery):
 
 2. Есть ли гарантия?
 — Да.
-""")
+        """,
+        reply_markup=kb.as_markup()
+    )
+
+# ====== КНОПКА НАЗАД ======
+@dp.callback_query(F.data == "back_to_main")
+async def back_to_main(call: CallbackQuery):
+    await call.answer()
+    if await check_ban(call.from_user.id):
+        return
+    await show_main_menu(call.from_user.id, call)
 
 # ====== АДМИН КОМАНДЫ ======
 @dp.message(Command("ban"))
