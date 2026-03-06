@@ -55,8 +55,8 @@ async def check_ban_and_terms(user_id: int) -> bool:
         await bot.send_message(
             user_id,
             "Для использования бота необходимо принять договор оферты и политику конфиденциальности.\n\n"
-            "[Договор оферты](https://example.com/offer)\n"
-            "[Политика конфиденциальности](https://example.com/privacy)",
+            "[Договор оферты](https://t.me/your_offer_link)\n"
+            "[Пользовательское соглашение](https://t.me/your_terms_link)",
             reply_markup=kb.as_markup(),
             parse_mode="Markdown"
         )
@@ -80,22 +80,15 @@ async def show_main_menu(chat_id: int):
     kb.button(text="❓ Частые вопросы", callback_data="faq")
     kb.adjust(1)
 
-    # ВАЖНО: Замените эти ID на те, которые соответствуют вашим эмодзи!
-    # Примеры ID из статьи, они могут не совпадать с вашими.
-    EMOJI_ID_PLANE = "5877700484453634587"   # ID для ✈️
-    EMOJI_ID_USER = "5870994129244131212"     # ID для 👤
-    EMOJI_ID_CHART = "5870891312022032055"    # ID для 📈
-
-    text = f"""
-<b>Приветствую!</b> <tg-emoji emoji-id="{EMOJI_ID_PLANE}">✈️</tg-emoji>
+    text = """
+<b>Приветствую!</b> ✈️
 <b>Добро пожаловать в бота для накрутки статистики пользователей, просмотров и реакций
 
-</b><blockquote><tg-emoji emoji-id="{EMOJI_ID_USER}">👤</tg-emoji> <b>Тех.поддержка: @
-</b><tg-emoji emoji-id="{EMOJI_ID_CHART}">📈</tg-emoji> <b>Наш канал: @</b></blockquote>
+</b><blockquote>👤 <b>Тех.поддержка: @support_username
+</b>📈 <b>Наш канал: @channel_username</b></blockquote>
 
-<a href="https://t.me/">Договор оферты</a> • <a href="https://t.me/">Пользовательское соглашение</a>
+<a href="https://t.me/your_offer_link">Договор оферты</a> • <a href="https://t.me/your_terms_link">Пользовательское соглашение</a>
     """
-
     try:
         photo = FSInputFile("photo.jpg")
         await bot.send_photo(chat_id, photo, caption=text, reply_markup=kb.as_markup(), parse_mode="HTML")
@@ -336,19 +329,29 @@ async def calc_result(message: Message, state: FSMContext):
     await message.answer(f"💰 Стоимость будет: {price} руб.")
     await state.clear()
 
-# ====== ТЕХ. ПОДДЕРЖКА ======
+# ====== ТЕХ. ПОДДЕРЖКА (с кастомными эмодзи) ======
 @dp.callback_query(F.data == "support")
 async def support(call: CallbackQuery):
     await call.answer()
     if await check_ban_and_terms(call.from_user.id):
         return
+
     kb = InlineKeyboardBuilder()
     kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
+
+    # Текст с кастомными эмодзи (ID из запроса пользователя)
+    text = """
+<b>Имеются вопросы, хотите предложить идею или у вас возникла проблема</b><tg-emoji emoji-id="5386713103213814186">❕</tg-emoji><b>
+
+</b><blockquote><b>Напишите нам в Telegram: @support_username </b><tg-emoji emoji-id="5386748326240611247">✅</tg-emoji></blockquote>
+
+<b>Ответ поступает в течение 24 часов</b><tg-emoji emoji-id="5386713103213814186">❕</tg-emoji>
+    """
+
     await call.message.answer(
-        "📞 Связаться с поддержкой:\n\n"
-        "Напишите нам в Telegram: @support_username\n"
-        "Или на почту: support@example.com",
-        reply_markup=kb.as_markup()
+        text,
+        reply_markup=kb.as_markup(),
+        parse_mode="HTML"
     )
 
 # ====== FAQ ======
