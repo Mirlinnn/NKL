@@ -2,8 +2,9 @@ import asyncio
 import logging
 import random
 import string
+import aiohttp
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, FSInputFile
+from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
@@ -285,25 +286,36 @@ async def decline_order_reason(message: Message, state: FSMContext):
     await message.answer(f"❌ Заказ №{order_id} отклонён.\nПричина: {reason}")
     await state.clear()
 
-# ====== КАЛЬКУЛЯТОР ======
+# ====== КАЛЬКУЛЯТОР (с прямым вызовом API) ======
 @dp.callback_query(F.data == "calc")
 async def calc_menu(call: CallbackQuery):
     await call.answer()
     if await check_ban_and_terms(call.from_user.id):
         return
 
-    kb = InlineKeyboardBuilder()
-    kb.button(text="Подписчики", callback_data="calc_subscribers")
-    kb.button(text="Просмотры", callback_data="calc_views")
-    kb.button(text="Реакции", callback_data="calc_reactions")
-    kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
-    kb.adjust(1)
+    # Формируем inline-клавиатуру с кнопками выбора услуги и кнопкой "Назад"
+    keyboard = [
+        [InlineKeyboardButton(text="Подписчики", callback_data="calc_subscribers")],
+        [InlineKeyboardButton(text="Просмотры", callback_data="calc_views")],
+        [InlineKeyboardButton(text="Реакции", callback_data="calc_reactions")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="back_to_main")]
+    ]
 
-    try:
-        await call.message.delete()
-    except Exception:
-        pass
+    # Преобразуем в формат Telegram API (поддержка новых полей, если они будут добавлены)
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": btn.text,
+                    "callback_data": btn.callback_data,
+                    **({"icon_custom_emoji_id": btn.icon_custom_emoji_id} if hasattr(btn, 'icon_custom_emoji_id') and btn.icon_custom_emoji_id else {}),
+                    **({"style": btn.style} if hasattr(btn, 'style') and btn.style else {})
+                } for btn in row
+            ] for row in keyboard
+        ]
+    }
 
+    # Текст с кастомными эмодзи
     text = """
 <b>Выберите услугу для подсчета стоимости</b>.
 <blockquote><tg-emoji emoji-id="5870994129244131212">👤</tg-emoji><b>Нынешний курс:
@@ -312,11 +324,36 @@ async def calc_menu(call: CallbackQuery):
 Просмотры: 1 реакция - 0.01₽</b>
 </blockquote>"""
 
-    await call.message.answer(
-        text,
-        reply_markup=kb.as_markup(),
-        parse_mode="HTML"
-    )
+    # Прямой вызов Telegram API
+    async with aiohttp.ClientSession() as session:
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": call.from_user.id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": reply_markup
+        }
+
+        async with session.post(url, json=payload) as resp:
+            if resp.status != 200:
+                logging.error(f"Failed to send calc menu via direct API: {await resp.text()}")
+                # Fallback через стандартный метод aiogram
+                kb = InlineKeyboardBuilder()
+                kb.button(text="Подписчики", callback_data="calc_subscribers")
+                kb.button(text="Просмотры", callback_data="calc_views")
+                kb.button(text="Реакции", callback_data="calc_reactions")
+                kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
+                kb.adjust(1)
+                await call.message.answer(
+                    text.replace("<tg-emoji", "<!-- tg-emoji").replace("</tg-emoji>", "-->"),
+                    reply_markup=kb.as_markup(),
+                    parse_mode="HTML"
+                )
 
 @dp.callback_query(F.data.startswith("calc_"))
 async def calc_choose(call: CallbackQuery, state: FSMContext):
@@ -344,17 +381,29 @@ async def calc_result(message: Message, state: FSMContext):
     await message.answer(f"💰 Стоимость будет: {price} руб.")
     await state.clear()
 
-# ====== ТЕХ. ПОДДЕРЖКА (с кастомными эмодзи) ======
+# ====== ТЕХ. ПОДДЕРЖКА (с прямым вызовом API) ======
 @dp.callback_query(F.data == "support")
 async def support(call: CallbackQuery):
     await call.answer()
     if await check_ban_and_terms(call.from_user.id):
         return
 
-    kb = InlineKeyboardBuilder()
-    kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
+    # Клавиатура с кнопкой "Назад"
+    keyboard = [[InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="back_to_main")]]
 
-    # Текст с кастомными эмодзи (ID из запроса пользователя)
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": btn.text,
+                    "callback_data": btn.callback_data,
+                    **({"icon_custom_emoji_id": btn.icon_custom_emoji_id} if hasattr(btn, 'icon_custom_emoji_id') and btn.icon_custom_emoji_id else {}),
+                    **({"style": btn.style} if hasattr(btn, 'style') and btn.style else {})
+                } for btn in row
+            ] for row in keyboard
+        ]
+    }
+
     text = """
 <b>Имеются вопросы, хотите предложить идею или у вас возникла проблема</b><tg-emoji emoji-id="5386713103213814186">❕</tg-emoji><b>
 
@@ -363,11 +412,30 @@ async def support(call: CallbackQuery):
 <b>Ответ поступает в течение 24 часов</b><tg-emoji emoji-id="5386713103213814186">❕</tg-emoji>
     """
 
-    await call.message.answer(
-        text,
-        reply_markup=kb.as_markup(),
-        parse_mode="HTML"
-    )
+    async with aiohttp.ClientSession() as session:
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": call.from_user.id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": reply_markup
+        }
+
+        async with session.post(url, json=payload) as resp:
+            if resp.status != 200:
+                logging.error(f"Failed to send support message via direct API: {await resp.text()}")
+                kb = InlineKeyboardBuilder()
+                kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
+                await call.message.answer(
+                    text.replace("<tg-emoji", "<!-- tg-emoji").replace("</tg-emoji>", "-->"),
+                    reply_markup=kb.as_markup(),
+                    parse_mode="HTML"
+                )
 
 # ====== FAQ ======
 @dp.callback_query(F.data == "faq")
@@ -508,7 +576,6 @@ async def broadcast_message(message: Message, state: FSMContext):
 # ====== RUN ======
 async def main():
     await database.init_db()
-    # Добавляем статических админов в БД при старте
     for admin_id in STATIC_ADMINS:
         await database.add_admin(admin_id)
     await dp.start_polling(bot)
