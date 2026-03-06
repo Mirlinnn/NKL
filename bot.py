@@ -61,7 +61,7 @@ async def check_ban_and_terms(user_id: int) -> bool:
             "[Пользовательское соглашение](https://t.me/your_terms_link)",
             reply_markup=kb.as_markup(),
             parse_mode="Markdown",
-            disable_web_page_preview=True  # <-- добавлено
+            disable_web_page_preview=True
         )
         return True
     return False
@@ -108,7 +108,6 @@ async def show_main_menu(chat_id: int):
     """
 
     async with aiohttp.ClientSession() as session:
-        # Пытаемся отправить с фото, если есть
         try:
             photo = FSInputFile("photo.jpg")
             form_data = aiohttp.FormData()
@@ -116,32 +115,28 @@ async def show_main_menu(chat_id: int):
             form_data.add_field('caption', text)
             form_data.add_field('parse_mode', 'HTML')
             form_data.add_field('reply_markup', json.dumps(reply_markup))
-            # Для фото нет параметра disable_web_page_preview, но в caption ссылки могут давать предпросмотр.
-            # В sendPhoto такого параметра нет, поэтому предпросмотр может быть. Если это критично, лучше использовать sendMessage без фото.
             form_data.add_field('photo', open('photo.jpg', 'rb'), filename='photo.jpg')
 
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
             async with session.post(url, data=form_data) as resp:
                 if resp.status != 200:
-                    # Если фото не отправилось, шлём просто текст
                     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
                     payload = {
                         "chat_id": chat_id,
                         "text": text,
                         "parse_mode": "HTML",
                         "reply_markup": reply_markup,
-                        "disable_web_page_preview": True  # <-- добавлено
+                        "disable_web_page_preview": True
                     }
                     await session.post(url, json=payload)
         except FileNotFoundError:
-            # Если файла нет, шлём текст
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
             payload = {
                 "chat_id": chat_id,
                 "text": text,
                 "parse_mode": "HTML",
                 "reply_markup": reply_markup,
-                "disable_web_page_preview": True  # <-- добавлено
+                "disable_web_page_preview": True
             }
             await session.post(url, json=payload)
 
@@ -199,7 +194,7 @@ async def order_menu(call: CallbackQuery):
             "text": text,
             "parse_mode": "HTML",
             "reply_markup": reply_markup,
-            "disable_web_page_preview": True  # <-- добавлено
+            "disable_web_page_preview": True
         }
 
         async with session.post(url, json=payload) as resp:
@@ -215,7 +210,7 @@ async def order_menu(call: CallbackQuery):
                     text.replace("<tg-emoji", "<!-- tg-emoji").replace("</tg-emoji>", "-->"),
                     reply_markup=kb.as_markup(),
                     parse_mode="HTML",
-                    disable_web_page_preview=True  # <-- добавлено
+                    disable_web_page_preview=True
                 )
 
 @dp.callback_query(F.data.in_(["subscribers", "views", "reactions"]))
@@ -257,7 +252,7 @@ async def choose_service(call: CallbackQuery, state: FSMContext):
             "chat_id": call.from_user.id,
             "text": text,
             "parse_mode": "HTML",
-            "disable_web_page_preview": True  # <-- добавлено
+            "disable_web_page_preview": True
         }
 
         async with session.post(url, json=payload) as resp:
@@ -266,12 +261,11 @@ async def choose_service(call: CallbackQuery, state: FSMContext):
                 await call.message.answer(
                     text.replace("<tg-emoji", "<!-- tg-emoji").replace("</tg-emoji>", "-->"),
                     parse_mode="HTML",
-                    disable_web_page_preview=True  # <-- добавлено
+                    disable_web_page_preview=True
                 )
 
     await state.set_state(OrderState.waiting_quantity)
 
-# ====== Далее идут стандартные обработчики (с добавленным параметром) ======
 @dp.message(OrderState.waiting_quantity)
 async def get_quantity(message: Message, state: FSMContext):
     if await check_ban_and_terms(message.from_user.id):
@@ -314,7 +308,6 @@ async def get_link(message: Message, state: FSMContext):
         payment_info += f"\n{CARD_DETAILS}"
     if CRYPTO_DETAILS:
         payment_info += f"\n{CRYPTO_DETAILS}"
-    # В этом сообщении есть ссылка от пользователя, отключаем предпросмотр
     await message.answer(
         f"""
 📦 Заказ №{order_id}
@@ -326,7 +319,7 @@ async def get_link(message: Message, state: FSMContext):
 {payment_info}
 """,
         reply_markup=kb.as_markup(),
-        disable_web_page_preview=True  # <-- добавлено
+        disable_web_page_preview=True
     )
     await state.clear()
 
@@ -361,12 +354,11 @@ async def check_payment(call: CallbackQuery):
     admins = await database.get_all_admins()
     for admin in admins:
         try:
-            # В сообщении для админа есть ссылка, отключаем предпросмотр
             await bot.send_message(
                 admin,
                 text_for_admin,
                 reply_markup=kb.as_markup(),
-                disable_web_page_preview=True  # <-- добавлено
+                disable_web_page_preview=True
             )
         except Exception as e:
             logging.error(f"Failed to send to admin {admin}: {e}")
@@ -385,7 +377,6 @@ async def accept_order(call: CallbackQuery):
     await database.update_order_status(order_id, "ACCEPTED", "Принят")
     await call.message.edit_text(call.message.text + "\n\n✅ Заказ принят.", reply_markup=None)
     try:
-        # Уведомление пользователю (без ссылок, но на всякий случай добавим)
         await bot.send_message(
             order[1],
             f"✅ Ваш заказ №{order_id} принят и будет выполнен в ближайшее время.",
@@ -404,7 +395,7 @@ async def accept_order(call: CallbackQuery):
         f"🔢 Количество: {order[3]}\n"
         f"💰 Сумма: {order[4]} руб.\n"
         f"🔗 Ссылка: {order[5]}",
-        disable_web_page_preview=True  # <-- добавлено
+        disable_web_page_preview=True
     )
 
 @dp.callback_query(F.data.startswith("decline_"))
@@ -432,7 +423,6 @@ async def decline_order_reason(message: Message, state: FSMContext):
     order = data['order']
     await database.update_order_status(order_id, "DECLINED", f"Отклонён: {reason}")
     try:
-        # Уведомление пользователю с причиной (ссылок нет)
         await bot.send_message(
             order[1],
             f"❌ Ваш заказ №{order_id} отклонён.\nПричина: {reason}",
@@ -492,7 +482,7 @@ async def calc_menu(call: CallbackQuery):
             "text": text,
             "parse_mode": "HTML",
             "reply_markup": reply_markup,
-            "disable_web_page_preview": True  # <-- добавлено (хотя ссылок нет)
+            "disable_web_page_preview": True
         }
 
         async with session.post(url, json=payload) as resp:
@@ -579,7 +569,7 @@ async def support(call: CallbackQuery):
             "text": text,
             "parse_mode": "HTML",
             "reply_markup": reply_markup,
-            "disable_web_page_preview": True  # <-- добавлено (на всякий случай)
+            "disable_web_page_preview": True
         }
 
         async with session.post(url, json=payload) as resp:
@@ -649,7 +639,7 @@ async def faq(call: CallbackQuery):
             "text": text,
             "parse_mode": "HTML",
             "reply_markup": reply_markup,
-            "disable_web_page_preview": True  # <-- добавлено
+            "disable_web_page_preview": True
         }
 
         async with session.post(url, json=payload) as resp:
@@ -756,8 +746,29 @@ async def remove_admin(message: Message):
 async def broadcast_command(message: Message, state: FSMContext):
     if not await is_admin_from_db_or_config(message.from_user.id):
         return
-    await message.answer("Отправьте сообщение для рассылки всем пользователям (можно с медиа).")
-    await state.set_state(BroadcastState.waiting_message)
+    # Проверяем, есть ли текст после команды
+    parts = message.text.split(maxsplit=1)
+    if len(parts) > 1:
+        # Есть текст – отправляем рассылку сразу
+        text = parts[1]
+        users = await database.get_all_users()
+        await message.answer(f"Начинаю рассылку текста {len(users)} пользователям...")
+        sent = 0
+        blocked = 0
+        for user_id in users:
+            try:
+                await bot.send_message(user_id, text, disable_web_page_preview=True)
+                sent += 1
+                await asyncio.sleep(0.05)
+            except TelegramForbiddenError:
+                blocked += 1
+            except Exception as e:
+                logging.error(f"Failed to send to {user_id}: {e}")
+        await message.answer(f"Рассылка завершена.\nОтправлено: {sent}\nЗаблокировали бота: {blocked}")
+    else:
+        # Нет текста – переходим в режим ожидания сообщения
+        await message.answer("Отправьте сообщение для рассылки всем пользователям (можно с медиа).")
+        await state.set_state(BroadcastState.waiting_message)
 
 @dp.message(BroadcastState.waiting_message)
 async def broadcast_message(message: Message, state: FSMContext):
@@ -769,12 +780,11 @@ async def broadcast_message(message: Message, state: FSMContext):
     blocked = 0
     for user_id in users:
         try:
-            # При рассылке ссылок тоже отключаем предпросмотр
             await bot.copy_message(
                 chat_id=user_id,
                 from_chat_id=message.chat.id,
                 message_id=message.message_id,
-                disable_web_page_preview=True  # <-- добавлено
+                disable_web_page_preview=True
             )
             sent += 1
             await asyncio.sleep(0.05)
