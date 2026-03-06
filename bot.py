@@ -277,7 +277,7 @@ async def get_quantity(message: Message, state: FSMContext):
     service = data["service"]
     price = quantity * PRICES[service]
     await state.update_data(quantity=quantity, price=price)
-    await message.answer(f"💰 Стоимость: {price} руб.\n\nОтправьте ссылку:")
+    await message.answer(f"💰 Стоимость: {price} руб.\n\nОтправьте ссылку(если это накрутка реакций или просмотров, то укажите ссылку на пост):")
     await state.set_state(OrderState.waiting_link)
 
 @dp.message(OrderState.waiting_link)
