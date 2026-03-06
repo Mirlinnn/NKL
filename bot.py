@@ -60,7 +60,8 @@ async def check_ban_and_terms(user_id: int) -> bool:
             "[Договор оферты](https://t.me/your_offer_link)\n"
             "[Пользовательское соглашение](https://t.me/your_terms_link)",
             reply_markup=kb.as_markup(),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
+            disable_web_page_preview=True  # <-- добавлено
         )
         return True
     return False
@@ -73,7 +74,7 @@ async def accept_terms(call: CallbackQuery):
     await call.message.edit_text("✅ Вы приняли договор оферты и политику конфиденциальности. Теперь вы можете пользоваться ботом.")
     await show_main_menu(call.from_user.id)
 
-# ====== ГЛАВНОЕ МЕНЮ (переделано на прямой API-вызов) ======
+# ====== ГЛАВНОЕ МЕНЮ (с отключением предпросмотра) ======
 async def show_main_menu(chat_id: int):
     # Формируем inline-клавиатуру
     keyboard = [
@@ -115,6 +116,8 @@ async def show_main_menu(chat_id: int):
             form_data.add_field('caption', text)
             form_data.add_field('parse_mode', 'HTML')
             form_data.add_field('reply_markup', json.dumps(reply_markup))
+            # Для фото нет параметра disable_web_page_preview, но в caption ссылки могут давать предпросмотр.
+            # В sendPhoto такого параметра нет, поэтому предпросмотр может быть. Если это критично, лучше использовать sendMessage без фото.
             form_data.add_field('photo', open('photo.jpg', 'rb'), filename='photo.jpg')
 
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
@@ -126,7 +129,8 @@ async def show_main_menu(chat_id: int):
                         "chat_id": chat_id,
                         "text": text,
                         "parse_mode": "HTML",
-                        "reply_markup": reply_markup
+                        "reply_markup": reply_markup,
+                        "disable_web_page_preview": True  # <-- добавлено
                     }
                     await session.post(url, json=payload)
         except FileNotFoundError:
@@ -136,7 +140,8 @@ async def show_main_menu(chat_id: int):
                 "chat_id": chat_id,
                 "text": text,
                 "parse_mode": "HTML",
-                "reply_markup": reply_markup
+                "reply_markup": reply_markup,
+                "disable_web_page_preview": True  # <-- добавлено
             }
             await session.post(url, json=payload)
 
@@ -148,7 +153,7 @@ async def start_handler(message: Message):
         return
     await show_main_menu(message.chat.id)
 
-# ====== ЗАКАЗ (с прямым API) ======
+# ====== ЗАКАЗ (с отключением предпросмотра) ======
 @dp.callback_query(F.data == "order")
 async def order_menu(call: CallbackQuery):
     await call.answer()
@@ -193,7 +198,8 @@ async def order_menu(call: CallbackQuery):
             "chat_id": call.from_user.id,
             "text": text,
             "parse_mode": "HTML",
-            "reply_markup": reply_markup
+            "reply_markup": reply_markup,
+            "disable_web_page_preview": True  # <-- добавлено
         }
 
         async with session.post(url, json=payload) as resp:
@@ -208,7 +214,8 @@ async def order_menu(call: CallbackQuery):
                 await call.message.answer(
                     text.replace("<tg-emoji", "<!-- tg-emoji").replace("</tg-emoji>", "-->"),
                     reply_markup=kb.as_markup(),
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    disable_web_page_preview=True  # <-- добавлено
                 )
 
 @dp.callback_query(F.data.in_(["subscribers", "views", "reactions"]))
@@ -249,7 +256,8 @@ async def choose_service(call: CallbackQuery, state: FSMContext):
         payload = {
             "chat_id": call.from_user.id,
             "text": text,
-            "parse_mode": "HTML"
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True  # <-- добавлено
         }
 
         async with session.post(url, json=payload) as resp:
@@ -257,12 +265,13 @@ async def choose_service(call: CallbackQuery, state: FSMContext):
                 logging.error(f"Failed to send service choice message via direct API: {await resp.text()}")
                 await call.message.answer(
                     text.replace("<tg-emoji", "<!-- tg-emoji").replace("</tg-emoji>", "-->"),
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    disable_web_page_preview=True  # <-- добавлено
                 )
 
     await state.set_state(OrderState.waiting_quantity)
 
-# ====== Далее идут стандартные обработчики (без изменений) ======
+# ====== Далее идут стандартные обработчики (с добавленным параметром) ======
 @dp.message(OrderState.waiting_quantity)
 async def get_quantity(message: Message, state: FSMContext):
     if await check_ban_and_terms(message.from_user.id):
@@ -305,6 +314,7 @@ async def get_link(message: Message, state: FSMContext):
         payment_info += f"\n{CARD_DETAILS}"
     if CRYPTO_DETAILS:
         payment_info += f"\n{CRYPTO_DETAILS}"
+    # В этом сообщении есть ссылка от пользователя, отключаем предпросмотр
     await message.answer(
         f"""
 📦 Заказ №{order_id}
@@ -315,7 +325,8 @@ async def get_link(message: Message, state: FSMContext):
 Ссылка: {link}
 {payment_info}
 """,
-        reply_markup=kb.as_markup()
+        reply_markup=kb.as_markup(),
+        disable_web_page_preview=True  # <-- добавлено
     )
     await state.clear()
 
@@ -350,7 +361,13 @@ async def check_payment(call: CallbackQuery):
     admins = await database.get_all_admins()
     for admin in admins:
         try:
-            await bot.send_message(admin, text_for_admin, reply_markup=kb.as_markup())
+            # В сообщении для админа есть ссылка, отключаем предпросмотр
+            await bot.send_message(
+                admin,
+                text_for_admin,
+                reply_markup=kb.as_markup(),
+                disable_web_page_preview=True  # <-- добавлено
+            )
         except Exception as e:
             logging.error(f"Failed to send to admin {admin}: {e}")
 
@@ -368,7 +385,12 @@ async def accept_order(call: CallbackQuery):
     await database.update_order_status(order_id, "ACCEPTED", "Принят")
     await call.message.edit_text(call.message.text + "\n\n✅ Заказ принят.", reply_markup=None)
     try:
-        await bot.send_message(order[1], f"✅ Ваш заказ №{order_id} принят и будет выполнен в ближайшее время.")
+        # Уведомление пользователю (без ссылок, но на всякий случай добавим)
+        await bot.send_message(
+            order[1],
+            f"✅ Ваш заказ №{order_id} принят и будет выполнен в ближайшее время.",
+            disable_web_page_preview=True
+        )
     except TelegramForbiddenError:
         logging.warning(f"User {order[1]} blocked the bot.")
     except Exception as e:
@@ -381,7 +403,8 @@ async def accept_order(call: CallbackQuery):
         f"📦 Услуга: {service_name}\n"
         f"🔢 Количество: {order[3]}\n"
         f"💰 Сумма: {order[4]} руб.\n"
-        f"🔗 Ссылка: {order[5]}"
+        f"🔗 Ссылка: {order[5]}",
+        disable_web_page_preview=True  # <-- добавлено
     )
 
 @dp.callback_query(F.data.startswith("decline_"))
@@ -409,7 +432,12 @@ async def decline_order_reason(message: Message, state: FSMContext):
     order = data['order']
     await database.update_order_status(order_id, "DECLINED", f"Отклонён: {reason}")
     try:
-        await bot.send_message(order[1], f"❌ Ваш заказ №{order_id} отклонён.\nПричина: {reason}")
+        # Уведомление пользователю с причиной (ссылок нет)
+        await bot.send_message(
+            order[1],
+            f"❌ Ваш заказ №{order_id} отклонён.\nПричина: {reason}",
+            disable_web_page_preview=True
+        )
     except TelegramForbiddenError:
         logging.warning(f"User {order[1]} blocked the bot.")
     except Exception as e:
@@ -417,7 +445,7 @@ async def decline_order_reason(message: Message, state: FSMContext):
     await message.answer(f"❌ Заказ №{order_id} отклонён.\nПричина: {reason}")
     await state.clear()
 
-# ====== КАЛЬКУЛЯТОР (с прямым API) ======
+# ====== КАЛЬКУЛЯТОР (с отключением предпросмотра) ======
 @dp.callback_query(F.data == "calc")
 async def calc_menu(call: CallbackQuery):
     await call.answer()
@@ -463,7 +491,8 @@ async def calc_menu(call: CallbackQuery):
             "chat_id": call.from_user.id,
             "text": text,
             "parse_mode": "HTML",
-            "reply_markup": reply_markup
+            "reply_markup": reply_markup,
+            "disable_web_page_preview": True  # <-- добавлено (хотя ссылок нет)
         }
 
         async with session.post(url, json=payload) as resp:
@@ -478,7 +507,8 @@ async def calc_menu(call: CallbackQuery):
                 await call.message.answer(
                     text.replace("<tg-emoji", "<!-- tg-emoji").replace("</tg-emoji>", "-->"),
                     reply_markup=kb.as_markup(),
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
                 )
 
 @dp.callback_query(F.data.startswith("calc_"))
@@ -507,7 +537,7 @@ async def calc_result(message: Message, state: FSMContext):
     await message.answer(f"💰 Стоимость будет: {price} руб.")
     await state.clear()
 
-# ====== ТЕХ. ПОДДЕРЖКА (с прямым API) ======
+# ====== ТЕХ. ПОДДЕРЖКА (без ссылок) ======
 @dp.callback_query(F.data == "support")
 async def support(call: CallbackQuery):
     await call.answer()
@@ -548,7 +578,8 @@ async def support(call: CallbackQuery):
             "chat_id": call.from_user.id,
             "text": text,
             "parse_mode": "HTML",
-            "reply_markup": reply_markup
+            "reply_markup": reply_markup,
+            "disable_web_page_preview": True  # <-- добавлено (на всякий случай)
         }
 
         async with session.post(url, json=payload) as resp:
@@ -559,17 +590,17 @@ async def support(call: CallbackQuery):
                 await call.message.answer(
                     text.replace("<tg-emoji", "<!-- tg-emoji").replace("</tg-emoji>", "-->"),
                     reply_markup=kb.as_markup(),
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
                 )
 
-# ====== FAQ (ЧАСТЫЕ ВОПРОСЫ) - НОВЫЙ ОБРАБОТЧИК ======
+# ====== FAQ (с отключением предпросмотра) ======
 @dp.callback_query(F.data == "faq")
 async def faq(call: CallbackQuery):
     await call.answer()
     if await check_ban_and_terms(call.from_user.id):
         return
 
-    # Клавиатура с кнопкой "Назад"
     keyboard = [[InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="back_to_main")]]
 
     reply_markup = {
@@ -585,7 +616,6 @@ async def faq(call: CallbackQuery):
         ]
     }
 
-    # Текст с кастомными эмодзи и расширяемым блоком
     text = """
 <b>Все частые вопросы которые задают пользователи</b><tg-emoji emoji-id="5379748062124056162">❗️</tg-emoji><b>
 
@@ -618,19 +648,20 @@ async def faq(call: CallbackQuery):
             "chat_id": call.from_user.id,
             "text": text,
             "parse_mode": "HTML",
-            "reply_markup": reply_markup
+            "reply_markup": reply_markup,
+            "disable_web_page_preview": True  # <-- добавлено
         }
 
         async with session.post(url, json=payload) as resp:
             if resp.status != 200:
                 logging.error(f"Failed to send FAQ via direct API: {await resp.text()}")
-                # Fallback на простой текст без кастомных эмодзи
                 kb = InlineKeyboardBuilder()
                 kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
                 await call.message.answer(
                     text.replace("<tg-emoji", "<!-- tg-emoji").replace("</tg-emoji>", "-->"),
                     reply_markup=kb.as_markup(),
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
                 )
 
 # ====== КНОПКА НАЗАД ======
@@ -738,7 +769,13 @@ async def broadcast_message(message: Message, state: FSMContext):
     blocked = 0
     for user_id in users:
         try:
-            await bot.copy_message(chat_id=user_id, from_chat_id=message.chat.id, message_id=message.message_id)
+            # При рассылке ссылок тоже отключаем предпросмотр
+            await bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id,
+                disable_web_page_preview=True  # <-- добавлено
+            )
             sent += 1
             await asyncio.sleep(0.05)
         except TelegramForbiddenError:
