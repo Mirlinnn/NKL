@@ -72,54 +72,16 @@ async def accept_terms(call: CallbackQuery):
     await call.message.edit_text("✅ Вы приняли договор оферты и политику конфиденциальности. Теперь вы можете пользоваться ботом.")
     await show_main_menu(call.from_user.id)
 
-# ====== Главное меню ======
+# ====== ГЛАВНОЕ МЕНЮ (переделано на прямой API-вызов) ======
 async def show_main_menu(chat_id: int):
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🛒 Заказать накрутку", callback_data="order")
-    kb.button(text="🧮 Калькулятор", callback_data="calc")
-    kb.button(text="🛠 Тех. Поддержка", callback_data="support")
-    kb.button(text="❓ Частые вопросы", callback_data="faq")
-    kb.adjust(1)
-
-    text = """
-<b>Приветствую!</b> ✈️
-<b>Добро пожаловать в бота для накрутки статистики пользователей, просмотров и реакций
-
-</b><blockquote>👤 <b>Тех.поддержка: @support_username
-</b>📈 <b>Наш канал: @channel_username</b></blockquote>
-
-<a href="https://t.me/your_offer_link">Договор оферты</a> • <a href="https://t.me/your_terms_link">Пользовательское соглашение</a>
-    """
-    try:
-        photo = FSInputFile("photo.jpg")
-        await bot.send_photo(chat_id, photo, caption=text, reply_markup=kb.as_markup(), parse_mode="HTML")
-    except FileNotFoundError:
-        await bot.send_message(chat_id, text, reply_markup=kb.as_markup(), parse_mode="HTML")
-
-# ====== /start ======
-@dp.message(Command("start"))
-async def start_handler(message: Message):
-    await database.add_user(message.from_user.id)
-    if await check_ban_and_terms(message.from_user.id):
-        return
-    await show_main_menu(message.chat.id)
-
-# ====== ЗАКАЗ (обновлённые обработчики с прямым API) ======
-@dp.callback_query(F.data == "order")
-async def order_menu(call: CallbackQuery):
-    await call.answer()
-    if await check_ban_and_terms(call.from_user.id):
-        return
-
-    # Формируем inline-клавиатуру вручную
+    # Формируем inline-клавиатуру
     keyboard = [
-        [InlineKeyboardButton(text="Подписчики", callback_data="subscribers")],
-        [InlineKeyboardButton(text="Просмотры", callback_data="views")],
-        [InlineKeyboardButton(text="Реакции", callback_data="reactions")],
-        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="back_to_main")]
+        [InlineKeyboardButton(text="🛒 Заказать накрутку", callback_data="order")],
+        [InlineKeyboardButton(text="🧮 Калькулятор", callback_data="calc")],
+        [InlineKeyboardButton(text="🛠 Тех. Поддержка", callback_data="support")],
+        [InlineKeyboardButton(text="❓ Частые вопросы", callback_data="faq")]
     ]
 
-    # Преобразуем в формат Telegram API
     reply_markup = {
         "inline_keyboard": [
             [
@@ -133,7 +95,85 @@ async def order_menu(call: CallbackQuery):
         ]
     }
 
-    # Текст с кастомными эмодзи
+    text = """
+<b>Приветствую!</b> ✈️
+<b>Добро пожаловать в бота для накрутки статистики пользователей, просмотров и реакций
+
+</b><blockquote>👤 <b>Тех.поддержка: @support_username
+</b>📈 <b>Наш канал: @channel_username</b></blockquote>
+
+<a href="https://t.me/your_offer_link">Договор оферты</a> • <a href="https://t.me/your_terms_link">Пользовательское соглашение</a>
+    """
+
+    async with aiohttp.ClientSession() as session:
+        # Пытаемся отправить с фото, если есть
+        try:
+            photo = FSInputFile("photo.jpg")
+            form_data = aiohttp.FormData()
+            form_data.add_field('chat_id', str(chat_id))
+            form_data.add_field('caption', text)
+            form_data.add_field('parse_mode', 'HTML')
+            form_data.add_field('reply_markup', json.dumps(reply_markup))
+            form_data.add_field('photo', open('photo.jpg', 'rb'), filename='photo.jpg')
+
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+            async with session.post(url, data=form_data) as resp:
+                if resp.status != 200:
+                    # Если фото не отправилось, шлём просто текст
+                    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                    payload = {
+                        "chat_id": chat_id,
+                        "text": text,
+                        "parse_mode": "HTML",
+                        "reply_markup": reply_markup
+                    }
+                    await session.post(url, json=payload)
+        except FileNotFoundError:
+            # Если файла нет, шлём текст
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "reply_markup": reply_markup
+            }
+            await session.post(url, json=payload)
+
+# ====== /start ======
+@dp.message(Command("start"))
+async def start_handler(message: Message):
+    await database.add_user(message.from_user.id)
+    if await check_ban_and_terms(message.from_user.id):
+        return
+    await show_main_menu(message.chat.id)
+
+# ====== ЗАКАЗ (с прямым API) ======
+@dp.callback_query(F.data == "order")
+async def order_menu(call: CallbackQuery):
+    await call.answer()
+    if await check_ban_and_terms(call.from_user.id):
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(text="Подписчики", callback_data="subscribers")],
+        [InlineKeyboardButton(text="Просмотры", callback_data="views")],
+        [InlineKeyboardButton(text="Реакции", callback_data="reactions")],
+        [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="back_to_main")]
+    ]
+
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": btn.text,
+                    "callback_data": btn.callback_data,
+                    **({"icon_custom_emoji_id": btn.icon_custom_emoji_id} if hasattr(btn, 'icon_custom_emoji_id') and btn.icon_custom_emoji_id else {}),
+                    **({"style": btn.style} if hasattr(btn, 'style') and btn.style else {})
+                } for btn in row
+            ] for row in keyboard
+        ]
+    }
+
     text = """
 <b>Заказать услугу</b><tg-emoji emoji-id="5870695289714643076">👤</tg-emoji><b>
 
@@ -141,7 +181,6 @@ async def order_menu(call: CallbackQuery):
 <a href="https://t.me/shiitead">Курс для каждой услуги</a>
     """
 
-    # Прямой вызов API
     async with aiohttp.ClientSession() as session:
         try:
             await call.message.delete()
@@ -159,7 +198,6 @@ async def order_menu(call: CallbackQuery):
         async with session.post(url, json=payload) as resp:
             if resp.status != 200:
                 logging.error(f"Failed to send order menu via direct API: {await resp.text()}")
-                # Fallback на старый метод
                 kb = InlineKeyboardBuilder()
                 kb.button(text="Подписчики", callback_data="subscribers")
                 kb.button(text="Просмотры", callback_data="views")
@@ -181,7 +219,6 @@ async def choose_service(call: CallbackQuery, state: FSMContext):
     service = call.data
     await state.update_data(service=service)
 
-    # Выбираем текст в зависимости от услуги
     if service == "subscribers":
         text = """
 <tg-emoji emoji-id="5870729082517328189">📊</tg-emoji><b>Тип услуги: Подписчики</b><tg-emoji emoji-id="5870994129244131212">👤</tg-emoji><b>
@@ -201,7 +238,6 @@ async def choose_service(call: CallbackQuery, state: FSMContext):
 </b><a href="https://t.me/ineedforyou/5">Курс для каждой услуги</a>
         """
 
-    # Прямой вызов API (без клавиатуры)
     async with aiohttp.ClientSession() as session:
         try:
             await call.message.delete()
@@ -226,7 +262,6 @@ async def choose_service(call: CallbackQuery, state: FSMContext):
     await state.set_state(OrderState.waiting_quantity)
 
 # ====== Далее идут стандартные обработчики (без изменений) ======
-
 @dp.message(OrderState.waiting_quantity)
 async def get_quantity(message: Message, state: FSMContext):
     if await check_ban_and_terms(message.from_user.id):
@@ -381,7 +416,7 @@ async def decline_order_reason(message: Message, state: FSMContext):
     await message.answer(f"❌ Заказ №{order_id} отклонён.\nПричина: {reason}")
     await state.clear()
 
-# ====== КАЛЬКУЛЯТОР (уже с прямым API) ======
+# ====== КАЛЬКУЛЯТОР (с прямым API) ======
 @dp.callback_query(F.data == "calc")
 async def calc_menu(call: CallbackQuery):
     await call.answer()
@@ -471,7 +506,7 @@ async def calc_result(message: Message, state: FSMContext):
     await message.answer(f"💰 Стоимость будет: {price} руб.")
     await state.clear()
 
-# ====== ТЕХ. ПОДДЕРЖКА (уже с прямым API) ======
+# ====== ТЕХ. ПОДДЕРЖКА (с прямым API) ======
 @dp.callback_query(F.data == "support")
 async def support(call: CallbackQuery):
     await call.answer()
@@ -526,26 +561,76 @@ async def support(call: CallbackQuery):
                     parse_mode="HTML"
                 )
 
-# ====== FAQ ======
+# ====== FAQ (ЧАСТЫЕ ВОПРОСЫ) - НОВЫЙ ОБРАБОТЧИК ======
 @dp.callback_query(F.data == "faq")
 async def faq(call: CallbackQuery):
     await call.answer()
     if await check_ban_and_terms(call.from_user.id):
         return
-    kb = InlineKeyboardBuilder()
-    kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
-    await call.message.answer(
-        """
-❓ Частые вопросы:
 
-1. Когда начнётся накрутка?
-— После подтверждения оплаты.
+    # Клавиатура с кнопкой "Назад"
+    keyboard = [[InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="back_to_main")]]
 
-2. Есть ли гарантия?
-— Да.
-        """,
-        reply_markup=kb.as_markup()
-    )
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": btn.text,
+                    "callback_data": btn.callback_data,
+                    **({"icon_custom_emoji_id": btn.icon_custom_emoji_id} if hasattr(btn, 'icon_custom_emoji_id') and btn.icon_custom_emoji_id else {}),
+                    **({"style": btn.style} if hasattr(btn, 'style') and btn.style else {})
+                } for btn in row
+            ] for row in keyboard
+        ]
+    }
+
+    # Текст с кастомными эмодзи и расширяемым блоком
+    text = """
+<b>Все частые вопросы которые задают пользователи</b><tg-emoji emoji-id="5379748062124056162">❗️</tg-emoji><b>
+
+</b><blockquote expandable><b>1. Почему мою заявку на накрутку отклонили?
+- Вашу заявку могли отклонить по некоторым причинам, все причины по которым вам могли отклонить заявку прописаны в </b><a href="https://t.me/ineedforyou/"><b>пользовательском соглашении </b></a><b>
+
+2. Я оплатил накрутку, но она так и не началась.
+- После оплаты наша администрация проверяет вашу оплату, если оплата была произведена то мы принимаем вашу заявку на накрутку
+
+3. Почему так долго накручиваете?
+- Причин может быть несколько, но основные причины что сервера нагружены, накрутка происходит обычно в течении часа после принятия заявки.
+
+4. Какие гарантии?
+- Наш сервис предоставляет гарантию 2 дня, в случае если в период этого времени что то произошло и мы это подтвердим, то денежные средства будут вам возращены.
+
+5. Я заказал определённое количество накрутки, но пришло не все.
+- Да, такое бывает когда вы заказываете к примеру 5000 подписчиков, а приходит 4900, все из за того что некоторые боты не получают команду в обработку, обычных в течении часа доходят все боты.</b></blockquote><b>
+
+Основные вопросы мы обговорили, в случае если у вас другой вопрос, то обращайтесь в службу поддержки бота: @support_username</b>
+    """
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": call.from_user.id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": reply_markup
+        }
+
+        async with session.post(url, json=payload) as resp:
+            if resp.status != 200:
+                logging.error(f"Failed to send FAQ via direct API: {await resp.text()}")
+                # Fallback на простой текст без кастомных эмодзи
+                kb = InlineKeyboardBuilder()
+                kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
+                await call.message.answer(
+                    text.replace("<tg-emoji", "<!-- tg-emoji").replace("</tg-emoji>", "-->"),
+                    reply_markup=kb.as_markup(),
+                    parse_mode="HTML"
+                )
 
 # ====== КНОПКА НАЗАД ======
 @dp.callback_query(F.data == "back_to_main")
