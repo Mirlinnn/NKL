@@ -26,7 +26,7 @@ dp = Dispatcher()
 
 # Настройка ЮKassa
 Configuration.account_id = YOOKASSA_SHOP_ID
-Configuration.secret_key = YOKASSA_SECRET_KEY  # исправлено на YOOKASSA_SECRET_KEY (в config)
+Configuration.secret_key = YOOKASSA_SECRET_KEY  # исправлено на YOOKASSA_SECRET_KEY (в config)
 
 # ====== Состояния ======
 class OrderState(StatesGroup):
