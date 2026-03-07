@@ -4,19 +4,28 @@ import random
 import string
 import aiohttp
 import json
+import uuid
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
+from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramForbiddenError
-from config import BOT_TOKEN, ADMINS as STATIC_ADMINS, CARD_DETAILS, CRYPTO_DETAILS, YOOKASSA_PAYMENT_TOKEN
+from config import BOT_TOKEN, ADMINS as STATIC_ADMINS, CARD_DETAILS, CRYPTO_DETAILS
+from config import YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, YOOKASSA_RETURN_URL
 import database
+
+# Импорт библиотеки ЮKassa
+from yookassa import Configuration, Payment
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
+
+# Настройка ЮKassa
+Configuration.account_id = YOOKASSA_SHOP_ID
+Configuration.secret_key = YOOKASSA_SECRET_KEY
 
 # ====== Состояния ======
 class OrderState(StatesGroup):
@@ -33,7 +42,7 @@ class BroadcastState(StatesGroup):
     waiting_message = State()
 
 class PaymentState(StatesGroup):
-    waiting_for_invoice = State()  # после отправки счета
+    waiting_for_payment = State()  # после создания платежа, ожидаем подтверждения от пользователя
 
 # ====== Цены ======
 PRICES = {
@@ -48,7 +57,6 @@ def generate_order_id(length=6):
 
 # ====== Проверка бана и соглашения ======
 async def check_ban_and_terms(user_id: int) -> bool:
-    """Возвращает True, если доступ запрещён (бан или не приняты условия)."""
     banned = await database.is_banned(user_id)
     if banned:
         await bot.send_message(user_id, "❌ Вы заблокированы.")
@@ -92,8 +100,6 @@ async def show_main_menu(chat_id: int):
                 {
                     "text": btn.text,
                     "callback_data": btn.callback_data,
-                    **({"icon_custom_emoji_id": btn.icon_custom_emoji_id} if hasattr(btn, 'icon_custom_emoji_id') and btn.icon_custom_emoji_id else {}),
-                    **({"style": btn.style} if hasattr(btn, 'style') and btn.style else {})
                 } for btn in row
             ] for row in keyboard
         ]
@@ -169,8 +175,6 @@ async def order_menu(call: CallbackQuery):
                 {
                     "text": btn.text,
                     "callback_data": btn.callback_data,
-                    **({"icon_custom_emoji_id": btn.icon_custom_emoji_id} if hasattr(btn, 'icon_custom_emoji_id') and btn.icon_custom_emoji_id else {}),
-                    **({"style": btn.style} if hasattr(btn, 'style') and btn.style else {})
                 } for btn in row
             ] for row in keyboard
         ]
@@ -281,7 +285,7 @@ async def get_quantity(message: Message, state: FSMContext):
     await message.answer(f"💰 Стоимость: {price} руб.\n\nОтправьте ссылку:")
     await state.set_state(OrderState.waiting_link)
 
-# ====== ИСПРАВЛЕННЫЙ ХЕНДЛЕР С ОПЛАТОЙ ======
+# ====== ОБРАБОТКА ССЫЛКИ И СОЗДАНИЕ ПЛАТЕЖА В ЮKASSA ======
 @dp.message(OrderState.waiting_link)
 async def get_link(message: Message, state: FSMContext):
     if await check_ban_and_terms(message.from_user.id):
@@ -294,51 +298,6 @@ async def get_link(message: Message, state: FSMContext):
     service = data['service']
     quantity = data['quantity']
     price = data['price']  # float
-
-    # ===== КОРРЕКТНОЕ ПРЕОБРАЗОВАНИЕ В КОПЕЙКИ =====
-    price_in_kopecks = int(round(price * 100))
-    if price_in_kopecks <= 0:
-        return await message.answer("Сумма заказа должна быть больше 0.")
-
-    # Формируем список товаров
-    prices = [LabeledPrice(label=f"Услуга: {service}, кол-во: {quantity}", amount=price_in_kopecks)]
-
-    # Данные для чека (email будет запрошен у пользователя через need_email=True)
-    receipt_data = {
-        "customer": {
-            "email": ""  # будет заполнено автоматически благодаря need_email
-        },
-        "items": [
-            {
-                "description": f"{service} x{quantity}",
-                "quantity": 1,
-                "amount": {
-                    "value": f"{price:.2f}",
-                    "currency": "RUB"
-                },
-                "vat_code": 1  # без НДС
-            }
-        ]
-    }
-
-    try:
-        await message.answer_invoice(
-            title=f"Заказ №{order_id}",
-            description=f"Услуга: {service}\nКоличество: {quantity}\nСсылка: {link}",
-            payload=order_id,
-            provider_token=YOOKASSA_PAYMENT_TOKEN,
-            currency="RUB",
-            prices=prices,
-            start_parameter="create_order",
-            provider_data=json.dumps({"receipt": receipt_data}),
-            need_email=True,               # Telegram запросит email у пользователя
-            send_email_to_provider=True,    # и передаст его в ЮKassa
-            disable_web_page_preview=True
-        )
-    except Exception as e:
-        logging.error(f"Failed to send invoice: {e}")
-        await message.answer("Не удалось создать счёт. Попробуйте позже.")
-        return await state.clear()
 
     # Сохраняем заказ в БД со статусом PENDING
     try:
@@ -356,35 +315,131 @@ async def get_link(message: Message, state: FSMContext):
         await message.answer("Ошибка при создании заказа. Попробуйте позже.")
         return await state.clear()
 
-    await state.set_state(PaymentState.waiting_for_invoice)
+    # Создание платежа в ЮKassa
+    try:
+        idempotence_key = str(uuid.uuid4())
+        payment = Payment.create({
+            "amount": {
+                "value": f"{price:.2f}",
+                "currency": "RUB"
+            },
+            "confirmation": {
+                "type": "redirect",
+                "return_url": YOOKASSA_RETURN_URL
+            },
+            "capture": True,
+            "description": f"Заказ {order_id}: {service} x{quantity}",
+            "metadata": {
+                "order_id": order_id,
+                "user_id": message.from_user.id
+            }
+        }, idempotence_key)
 
-# ====== PreCheckoutQuery ======
-@dp.pre_checkout_query()
-async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+        # Сохраняем ID платежа в БД
+        await database.update_order_payment_id(order_id, payment.id)
 
-# ====== Успешный платёж ======
-@dp.message(F.successful_payment)
-async def process_successful_payment(message: Message, state: FSMContext):
-    payment_info = message.successful_payment
-    order_id = payment_info.invoice_payload
+        # Формируем сообщение с кнопкой оплаты и проверки
+        kb = InlineKeyboardBuilder()
+        kb.button(text="💳 Оплатить на сайте", url=payment.confirmation.confirmation_url)
+        kb.button(text="✅ Я оплатил", callback_data=f"check_payment_{order_id}")
+        kb.adjust(1)
 
-    await database.update_order_status(order_id, "PAID", "Оплачено через ЮKassa")
-    # Сохраняем идентификатор платежа (опционально)
-    # await database.update_order_payment_charge_id(order_id, payment_info.provider_payment_charge_id)
+        await message.answer(
+            f"✅ Заказ №{order_id} создан!\n\n"
+            f"Услуга: {service}\nКоличество: {quantity}\nСумма: {price:.2f} руб.\n\n"
+            f"Для оплаты перейдите по ссылке ниже. После оплаты нажмите «Я оплатил».",
+            reply_markup=kb.as_markup(),
+            disable_web_page_preview=True
+        )
+        await state.set_state(PaymentState.waiting_for_payment)
 
+    except Exception as e:
+        logging.error(f"YooKassa error: {e}")
+        await message.answer("Не удалось создать платёж. Попробуйте позже.")
+        await state.clear()
+
+# ====== ОБРАБОТЧИК НАЖАТИЯ "Я ОПЛАТИЛ" ======
+@dp.callback_query(F.data.startswith("check_payment_"))
+async def check_payment(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    if await check_ban_and_terms(call.from_user.id):
+        return
+
+    order_id = call.data.split("_")[2]  # check_payment_XXX
+
+    # Получаем заказ из БД
+    order = await database.get_order(order_id)
+    if not order:
+        return await call.message.answer("Заказ не найден.")
+    if order[6] not in ("PENDING", "NEW"):
+        return await call.message.answer("Этот заказ уже обработан.")
+
+    # Уведомляем админов о необходимости проверить оплату
     admins = await database.get_all_admins()
     for admin in admins:
-        await bot.send_message(admin, f"💰 Поступила оплата за заказ №{order_id}")
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✅ Принять", callback_data=f"accept_{order_id}")
+        kb.button(text="❌ Отклонить", callback_data=f"decline_{order_id}")
 
-    await message.answer(
-        f"✅ Оплата по заказу №{order_id} получена!\n"
-        f"Мы начали выполнение вашего заказа.",
-        disable_web_page_preview=True
-    )
+        await bot.send_message(
+            admin,
+            f"💳 Пользователь @{call.from_user.username or 'нет юзернейма'} (ID: {call.from_user.id}) сообщил об оплате заказа №{order_id}.\n\n"
+            f"Проверьте платеж вручную в ЮKassa и подтвердите или отклоните заказ.",
+            reply_markup=kb.as_markup()
+        )
 
+    await call.message.answer("✅ Администратор уведомлен. Ожидайте подтверждения оплаты.")
+
+# ====== ОБРАБОТЧИКИ ПРИНЯТИЯ/ОТКЛОНЕНИЯ ======
+@dp.callback_query(F.data.startswith("accept_"))
+async def accept_order(call: CallbackQuery):
+    await call.answer()
+    if not await database.is_admin(call.from_user.id):
+        return
+    order_id = call.data.split("_")[1]
+    order = await database.get_order(order_id)
+    if not order:
+        return await call.message.answer("Заказ не найден.")
+    if order[6] not in ("PENDING", "NEW"):
+        return await call.message.answer("Этот заказ уже обработан.")
+    await database.update_order_status(order_id, "ACCEPTED", "Принят администратором")
+    await call.message.edit_text(call.message.text + "\n\n✅ Заказ принят.", reply_markup=None)
+    try:
+        await bot.send_message(order[1], f"✅ Ваш заказ №{order_id} принят и будет выполнен.")
+    except TelegramForbiddenError:
+        logging.warning(f"User {order[1]} blocked the bot.")
+    await call.message.answer("Заказ подтверждён.")
+
+@dp.callback_query(F.data.startswith("decline_"))
+async def decline_order_start(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    if not await database.is_admin(call.from_user.id):
+        return
+    order_id = call.data.split("_")[1]
+    order = await database.get_order(order_id)
+    if not order:
+        return await call.message.answer("Заказ не найден.")
+    if order[6] not in ("PENDING", "NEW"):
+        return await call.message.answer("Этот заказ уже обработан.")
+    await state.update_data(order_id=order_id, order=order)
+    await call.message.answer("Введите причину отклонения заказа:")
+    await state.set_state(DeclineReason.waiting_reason)
+
+@dp.message(DeclineReason.waiting_reason)
+async def decline_order_reason(message: Message, state: FSMContext):
+    if not await database.is_admin(message.from_user.id):
+        return await state.clear()
+    reason = message.text.strip()
+    data = await state.get_data()
+    order_id = data['order_id']
+    order = data['order']
+    await database.update_order_status(order_id, "DECLINED", f"Отклонён: {reason}")
+    try:
+        await bot.send_message(order[1], f"❌ Ваш заказ №{order_id} отклонён.\nПричина: {reason}")
+    except TelegramForbiddenError:
+        logging.warning(f"User {order[1]} blocked the bot.")
+    await message.answer(f"❌ Заказ №{order_id} отклонён.")
     await state.clear()
-    await show_main_menu(message.chat.id)
 
 # ====== КАЛЬКУЛЯТОР ======
 @dp.callback_query(F.data == "calc")
@@ -406,8 +461,6 @@ async def calc_menu(call: CallbackQuery):
                 {
                     "text": btn.text,
                     "callback_data": btn.callback_data,
-                    **({"icon_custom_emoji_id": btn.icon_custom_emoji_id} if hasattr(btn, 'icon_custom_emoji_id') and btn.icon_custom_emoji_id else {}),
-                    **({"style": btn.style} if hasattr(btn, 'style') and btn.style else {})
                 } for btn in row
             ] for row in keyboard
         ]
@@ -493,8 +546,6 @@ async def support(call: CallbackQuery):
                 {
                     "text": btn.text,
                     "callback_data": btn.callback_data,
-                    **({"icon_custom_emoji_id": btn.icon_custom_emoji_id} if hasattr(btn, 'icon_custom_emoji_id') and btn.icon_custom_emoji_id else {}),
-                    **({"style": btn.style} if hasattr(btn, 'style') and btn.style else {})
                 } for btn in row
             ] for row in keyboard
         ]
@@ -550,8 +601,6 @@ async def faq(call: CallbackQuery):
                 {
                     "text": btn.text,
                     "callback_data": btn.callback_data,
-                    **({"icon_custom_emoji_id": btn.icon_custom_emoji_id} if hasattr(btn, 'icon_custom_emoji_id') and btn.icon_custom_emoji_id else {}),
-                    **({"style": btn.style} if hasattr(btn, 'style') and btn.style else {})
                 } for btn in row
             ] for row in keyboard
         ]
