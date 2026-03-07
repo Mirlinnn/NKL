@@ -33,7 +33,7 @@ class BroadcastState(StatesGroup):
     waiting_message = State()
 
 class PaymentState(StatesGroup):
-    waiting_for_invoice = State()  # новое состояние после отправки счета
+    waiting_for_invoice = State()  # после отправки счета
 
 # ====== Цены ======
 PRICES = {
@@ -149,7 +149,7 @@ async def start_handler(message: Message):
         return
     await show_main_menu(message.chat.id)
 
-# ====== ЗАКАЗ (обновлён с отправкой счёта) ======
+# ====== ЗАКАЗ ======
 @dp.callback_query(F.data == "order")
 async def order_menu(call: CallbackQuery):
     await call.answer()
@@ -281,6 +281,7 @@ async def get_quantity(message: Message, state: FSMContext):
     await message.answer(f"💰 Стоимость: {price} руб.\n\nОтправьте ссылку:")
     await state.set_state(OrderState.waiting_link)
 
+# ====== ИСПРАВЛЕННЫЙ ХЕНДЛЕР С ОПЛАТОЙ ======
 @dp.message(OrderState.waiting_link)
 async def get_link(message: Message, state: FSMContext):
     if await check_ban_and_terms(message.from_user.id):
@@ -292,52 +293,54 @@ async def get_link(message: Message, state: FSMContext):
     order_id = generate_order_id()
     service = data['service']
     quantity = data['quantity']
-    price = data['price']  # в рублях
+    price = data['price']  # float
 
-    # ===== ИНТЕГРАЦИЯ С ЮKASSA: ОТПРАВКА СЧЁТА =====
-    # Переводим рубли в копейки
-    price_in_kopecks = int(price * 100)
+    # ===== КОРРЕКТНОЕ ПРЕОБРАЗОВАНИЕ В КОПЕЙКИ =====
+    price_in_kopecks = int(round(price * 100))
+    if price_in_kopecks <= 0:
+        return await message.answer("Сумма заказа должна быть больше 0.")
 
-    # Формируем список товаров (один товар)
+    # Формируем список товаров
     prices = [LabeledPrice(label=f"Услуга: {service}, кол-во: {quantity}", amount=price_in_kopecks)]
 
-    # Данные для чека (ОБЯЗАТЕЛЬНО для ЮKassa)
-    # В реальном боте нужно запросить email/телефон у пользователя заранее
-    # Здесь для примера используем заглушку, но лучше запросить отдельно.
+    # Данные для чека (email будет запрошен у пользователя через need_email=True)
     receipt_data = {
         "customer": {
-            "email": "customer@example.com"  # Замените на реальный email!
+            "email": ""  # будет заполнено автоматически благодаря need_email
         },
         "items": [
             {
                 "description": f"{service} x{quantity}",
-                "quantity": 1,  # Если услуга одна, quantity=1, price считается за всё
+                "quantity": 1,
                 "amount": {
                     "value": f"{price:.2f}",
                     "currency": "RUB"
                 },
-                "vat_code": 1  # 1 = без НДС (изменить при необходимости)
+                "vat_code": 1  # без НДС
             }
         ]
     }
 
-    # Отправляем инвойс
-    await message.answer_invoice(
-        title=f"Заказ №{order_id}",
-        description=f"Услуга: {service}\nКоличество: {quantity}\nСсылка: {link}",
-        payload=order_id,  # Это придёт в successful_payment
-        provider_token=YOOKASSA_PAYMENT_TOKEN,
-        currency="RUB",
-        prices=prices,
-        start_parameter="create_order",
-        provider_data=json.dumps({"receipt": receipt_data}),  # Важно передать как строку JSON
-        # Если хотите запросить email прямо в платежной форме, добавьте:
-        # need_email=True,
-        # send_email_to_provider=True,
-        disable_web_page_preview=True
-    )
+    try:
+        await message.answer_invoice(
+            title=f"Заказ №{order_id}",
+            description=f"Услуга: {service}\nКоличество: {quantity}\nСсылка: {link}",
+            payload=order_id,
+            provider_token=YOOKASSA_PAYMENT_TOKEN,
+            currency="RUB",
+            prices=prices,
+            start_parameter="create_order",
+            provider_data=json.dumps({"receipt": receipt_data}),
+            need_email=True,               # Telegram запросит email у пользователя
+            send_email_to_provider=True,    # и передаст его в ЮKassa
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logging.error(f"Failed to send invoice: {e}")
+        await message.answer("Не удалось создать счёт. Попробуйте позже.")
+        return await state.clear()
 
-    # Сохраняем заказ в БД со статусом PENDING (ожидает оплаты)
+    # Сохраняем заказ в БД со статусом PENDING
     try:
         await database.create_order(
             order_id,
@@ -346,57 +349,41 @@ async def get_link(message: Message, state: FSMContext):
             quantity,
             price,
             link,
-            status="PENDING"  # добавьте этот параметр в функцию create_order (см. database.py)
+            status="PENDING"
         )
     except Exception as e:
         logging.error(f"DB error: {e}")
         await message.answer("Ошибка при создании заказа. Попробуйте позже.")
         return await state.clear()
 
-    # Переходим в состояние ожидания оплаты
     await state.set_state(PaymentState.waiting_for_invoice)
-    # Не очищаем state полностью, чтобы можно было обработать успешный платёж
 
-# ====== ОБРАБОТЧИК PreCheckoutQuery ======
+# ====== PreCheckoutQuery ======
 @dp.pre_checkout_query()
 async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
-    """Подтверждаем платёж перед списанием средств."""
-    # Можно добавить проверку, что заказ ещё актуален
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-    # Если что-то пошло не так, отправьте:
-    # await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=False, error_message="Причина отказа")
 
-# ====== ОБРАБОТЧИК УСПЕШНОГО ПЛАТЕЖА ======
+# ====== Успешный платёж ======
 @dp.message(F.successful_payment)
 async def process_successful_payment(message: Message, state: FSMContext):
-    """Обрабатываем успешную оплату."""
     payment_info = message.successful_payment
-    order_id = payment_info.invoice_payload  # тот самый payload из инвойса
+    order_id = payment_info.invoice_payload
 
-    # Обновляем статус заказа в БД на PAID
     await database.update_order_status(order_id, "PAID", "Оплачено через ЮKassa")
+    # Сохраняем идентификатор платежа (опционально)
+    # await database.update_order_payment_charge_id(order_id, payment_info.provider_payment_charge_id)
 
-    # Сохраняем payment_charge_id (транзакцию в ЮKassa) для сверки
-    charge_id = payment_info.provider_payment_charge_id
-    # если у вас есть функция для сохранения charge_id:
-    # await database.update_order_payment_charge_id(order_id, charge_id)
-
-    # Уведомляем администраторов
     admins = await database.get_all_admins()
     for admin in admins:
         await bot.send_message(admin, f"💰 Поступила оплата за заказ №{order_id}")
 
-    # Уведомляем пользователя
     await message.answer(
         f"✅ Оплата по заказу №{order_id} получена!\n"
         f"Мы начали выполнение вашего заказа.",
         disable_web_page_preview=True
     )
 
-    # Очищаем состояние
     await state.clear()
-
-    # Можно сразу показать главное меню
     await show_main_menu(message.chat.id)
 
 # ====== КАЛЬКУЛЯТОР ======
