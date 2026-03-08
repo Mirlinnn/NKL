@@ -4,6 +4,7 @@ import logging
 DB_PATH = "bot_database.db"
 
 async def init_db():
+    """Инициализация базы данных: создание таблиц и добавление недостающих колонок."""
     async with aiosqlite.connect(DB_PATH) as db:
         # Таблица пользователей
         await db.execute('''
@@ -44,6 +45,13 @@ async def init_db():
             await db.execute('ALTER TABLE orders ADD COLUMN payment_id TEXT')
             logging.info("Column 'payment_id' added to orders table.")
 
+        # Проверяем наличие колонки payment_charge_id (опционально)
+        try:
+            await db.execute('SELECT payment_charge_id FROM orders LIMIT 1')
+        except aiosqlite.OperationalError:
+            await db.execute('ALTER TABLE orders ADD COLUMN payment_charge_id TEXT')
+            logging.info("Column 'payment_charge_id' added to orders table.")
+
         # Таблица администраторов
         await db.execute('''
             CREATE TABLE IF NOT EXISTS admins (
@@ -56,38 +64,45 @@ async def init_db():
 
 # ====== Пользователи ======
 async def add_user(user_id: int):
+    """Добавляет нового пользователя в базу данных (если его ещё нет)."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (user_id,))
         await db.commit()
 
 async def is_banned(user_id: int) -> bool:
+    """Проверяет, заблокирован ли пользователь."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute('SELECT banned FROM users WHERE user_id = ?', (user_id,)) as cursor:
             row = await cursor.fetchone()
             return row and row[0] == 1
 
 async def ban_user(user_id: int):
+    """Блокирует пользователя."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute('UPDATE users SET banned = 1 WHERE user_id = ?', (user_id,))
         await db.commit()
 
 async def unban_user(user_id: int):
+    """Разблокирует пользователя."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute('UPDATE users SET banned = 0 WHERE user_id = ?', (user_id,))
         await db.commit()
 
 async def has_accepted_terms(user_id: int) -> bool:
+    """Проверяет, принял ли пользователь договор оферты."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute('SELECT accepted_terms FROM users WHERE user_id = ?', (user_id,)) as cursor:
             row = await cursor.fetchone()
             return row and row[0] == 1
 
 async def accept_terms(user_id: int):
+    """Отмечает, что пользователь принял договор оферты."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute('UPDATE users SET accepted_terms = 1 WHERE user_id = ?', (user_id,))
         await db.commit()
 
 async def get_all_users():
+    """Возвращает список всех ID пользователей."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute('SELECT user_id FROM users') as cursor:
             rows = await cursor.fetchall()
@@ -95,6 +110,7 @@ async def get_all_users():
 
 # ====== Заказы ======
 async def create_order(order_id: str, user_id: int, service: str, quantity: int, price: float, link: str, status: str = "NEW"):
+    """Создаёт новый заказ."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             'INSERT INTO orders (order_id, user_id, service, quantity, price, link, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -103,11 +119,13 @@ async def create_order(order_id: str, user_id: int, service: str, quantity: int,
         await db.commit()
 
 async def get_order(order_id: str):
+    """Возвращает информацию о заказе по его ID."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute('SELECT * FROM orders WHERE order_id = ?', (order_id,)) as cursor:
             return await cursor.fetchone()
 
 async def update_order_status(order_id: str, status: str, comment: str = None):
+    """Обновляет статус заказа и добавляет комментарий."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             'UPDATE orders SET status = ?, comment = ? WHERE order_id = ?',
@@ -133,23 +151,33 @@ async def update_order_payment_charge_id(order_id: str, charge_id: str):
         )
         await db.commit()
 
+async def get_pending_orders():
+    """Возвращает все заказы со статусом PENDING (ожидают оплаты)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('SELECT * FROM orders WHERE status = ?', ("PENDING",)) as cursor:
+            return await cursor.fetchall()
+
 # ====== Администраторы ======
 async def add_admin(user_id: int):
+    """Добавляет пользователя в список администраторов."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute('INSERT OR IGNORE INTO admins (user_id) VALUES (?)', (user_id,))
         await db.commit()
 
 async def remove_admin(user_id: int):
+    """Удаляет пользователя из списка администраторов."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute('DELETE FROM admins WHERE user_id = ?', (user_id,))
         await db.commit()
 
 async def is_admin(user_id: int) -> bool:
+    """Проверяет, является ли пользователь администратором."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute('SELECT 1 FROM admins WHERE user_id = ?', (user_id,)) as cursor:
             return await cursor.fetchone() is not None
 
 async def get_all_admins():
+    """Возвращает список всех ID администраторов."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute('SELECT user_id FROM admins') as cursor:
             rows = await cursor.fetchall()
