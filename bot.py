@@ -290,8 +290,6 @@ async def get_quantity(message: Message, state: FSMContext):
 # ====== ОБРАБОТКА ССЫЛКИ И СОЗДАНИЕ ПЛАТЕЖА В ЮKASSA ======
 @dp.message(OrderState.waiting_link)
 async def get_link(message: Message, state: FSMContext):
-logging.info(f"About to save: payment.id = {payment.id}, type = {type(payment.id)}")
-await database.update_order_payment_id(order_id, payment.id)
     if await check_ban_and_terms(message.from_user.id):
         return await state.clear()
     link = message.text.strip()
@@ -339,9 +337,14 @@ await database.update_order_payment_id(order_id, payment.id)
             }
         }, idempotence_key)
 
-        # Логируем весь объект платежа и его ID
-        logging.info(f"Payment object: {payment}")
-        logging.info(f"Payment ID from YooKassa: {payment.id}")
+        # Подробное логирование объекта payment
+        logging.info("=== ПОДРОБНЫЙ ОТВЕТ ЮKASSA ===")
+        logging.info(f"Тип объекта payment: {type(payment)}")
+        logging.info(f"Все атрибуты payment: {dir(payment)}")
+        logging.info(f"payment.id: {payment.id} (тип: {type(payment.id)})")
+        logging.info(f"payment.status: {payment.status}")
+        logging.info(f"payment.created_at: {payment.created_at}")
+        logging.info(f"payment.amount: {payment.amount}")
 
         # Сохраняем ID платежа в БД
         if not payment.id:
@@ -349,8 +352,15 @@ await database.update_order_payment_id(order_id, payment.id)
             await message.answer("Ошибка при создании платежа: не получен ID.")
             return await state.clear()
 
-        await database.update_order_payment_id(order_id, payment.id)
-        logging.info(f"Saved payment_id {payment.id} for order {order_id}")
+        # Убедимся, что payment.id - строка (приводим на всякий случай)
+        payment_id_str = str(payment.id)
+        logging.info(f"Сохраняем payment_id: {payment_id_str}")
+        await database.update_order_payment_id(order_id, payment_id_str)
+
+        # Проверим, что сохранилось (прочитаем заказ)
+        order_check = await database.get_order(order_id)
+        if order_check:
+            logging.info(f"После сохранения: payment_id в БД = {order_check[8]}")
 
         # Формируем сообщение с кнопкой оплаты
         kb = InlineKeyboardBuilder()
