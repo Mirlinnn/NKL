@@ -824,9 +824,9 @@ async def main():
     app.router.add_post('/yookassa-webhook', handle_yookassa_webhook)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8443)  # порт можно изменить
+    site = web.TCPSite(runner, '0.0.0.0', 443)  # порт можно изменить
     await site.start()
-    logging.info("Webhook server started on port 8443")
+    logging.info("Webhook server started on port 443")
 
     # Запускаем polling бота
     await dp.start_polling(bot)
