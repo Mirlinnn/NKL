@@ -363,7 +363,23 @@ async def get_link(message: Message, state: FSMContext):
             raise Exception("Missing payment_id or confirmation_url in response")
 
         logging.info(f"Payment ID from YooKassa: {payment_id}")
+
+        # Сохраняем ID платежа в БД
         await database.update_order_payment_id(order_id, payment_id)
+        logging.info(f"Saved payment_id {payment_id} for order {order_id}")
+
+        # НЕМЕДЛЕННАЯ ПРОВЕРКА: читаем заказ и логируем payment_id из БД
+        order_check = await database.get_order(order_id)
+        if order_check:
+            # Определим индекс поля payment_id (зависит от порядка полей в таблице)
+            # В нашей таблице: order_id, user_id, service, quantity, price, link, status, comment, payment_id, payment_charge_id, created_at
+            # Индекс payment_id = 8 (считая с 0)
+            saved_payment_id = order_check[8]
+            logging.info(f"Immediate check: payment_id in DB for order {order_id} is {saved_payment_id}")
+            if saved_payment_id != payment_id:
+                logging.error(f"CRITICAL: saved payment_id {saved_payment_id} does not match expected {payment_id}")
+        else:
+            logging.error(f"Order {order_id} not found after creation!")
 
         # Формируем сообщение с кнопкой оплаты
         kb = InlineKeyboardBuilder()
