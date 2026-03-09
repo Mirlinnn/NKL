@@ -32,6 +32,13 @@ class OrderState(StatesGroup):
     waiting_quantity = State()
     waiting_link = State()
 
+class SubscribersDuration(StatesGroup):
+    waiting_duration = State()  # для выбора длительности подписчиков
+
+class ReactionsType(StatesGroup):
+    waiting_reaction_type = State()  # для выбора типа реакций
+    waiting_reaction_emoji = State()  # для выбора конкретного эмодзи из списка
+
 class PaymentMethodChoice(StatesGroup):
     choosing_method = State()
 
@@ -48,11 +55,33 @@ class PaymentState(StatesGroup):
     waiting_for_payment = State()
 
 # ====== Цены ======
+# Цена за единицу (человек/реакция) = 1 рубль
 PRICES = {
-    "subscribers": 0.02,
-    "views": 0.01,
-    "reactions": 0.01
+    "subscribers": 1.0,
+    "views": 1.0,
+    "reactions": 1.0
 }
+
+# Варианты длительности для подписчиков
+SUBSCRIBER_DURATIONS = {
+    "day": "1 день",
+    "3days": "3 дня",
+    "7days": "7 дней",
+    "30days": "30 дней",
+    "90days": "90 дней",
+    "forever": "Навсегда"
+}
+
+# Типы реакций
+REACTION_TYPES = {
+    "custom": "Кастомные",
+    "positive": "Позитивные",
+    "negative": "Негативные",
+    "emoji_list": "Эмодзи из списка"
+}
+
+# Список эмодзи для выбора
+EMOJI_LIST = ["❤️", "⚡", "👍", "💩", "🖕", "👨‍💻"]
 
 # ====== Генерация ID заказа ======
 def generate_order_id(length=6):
@@ -158,7 +187,7 @@ async def start_handler(message: Message):
         return
     await show_main_menu(message.chat.id)
 
-# ====== ЗАКАЗ ======
+# ====== ЗАКАЗ (главное меню выбора услуги) ======
 @dp.callback_query(F.data == "order")
 async def order_menu(call: CallbackQuery):
     await call.answer()
@@ -221,59 +250,101 @@ async def order_menu(call: CallbackQuery):
                     disable_web_page_preview=True
                 )
 
-@dp.callback_query(F.data.in_(["subscribers", "views", "reactions"]))
-async def choose_service(call: CallbackQuery, state: FSMContext):
+# ====== ОБРАБОТЧИКИ ВЫБОРА ОСНОВНОЙ УСЛУГИ ======
+@dp.callback_query(F.data == "subscribers")
+async def choose_subscribers(call: CallbackQuery, state: FSMContext):
     await call.answer()
     if await check_ban_and_terms(call.from_user.id):
         return
+    await state.update_data(service="subscribers")
+    
+    # Показываем меню выбора длительности
+    kb = InlineKeyboardBuilder()
+    for key, name in SUBSCRIBER_DURATIONS.items():
+        kb.button(text=name, callback_data=f"sub_dur_{key}")
+    kb.button(text="◀️ Назад к выбору услуги", callback_data="order")
+    kb.adjust(2)
+    
+    await call.message.edit_text(
+        "Выберите длительность подписки:",
+        reply_markup=kb.as_markup()
+    )
+    await state.set_state(SubscribersDuration.waiting_duration)
 
-    service = call.data
-    await state.update_data(service=service)
-
-    if service == "subscribers":
-        text = """
-<tg-emoji emoji-id="5870729082517328189">📊</tg-emoji><b>Тип услуги: Подписчики</b><tg-emoji emoji-id="5870994129244131212">👤</tg-emoji><b>
-Выберете количество подписчиков: от 1 до 100.000 человек
-</b><a href="https://t.me/ineedforyou/5">Курс для каждой услуги</a>
-        """
-    elif service == "reactions":
-        text = """
-<tg-emoji emoji-id="5870729082517328189">📊</tg-emoji><b>Тип услуги: Реакции</b><tg-emoji emoji-id="5870994129244131212">👤</tg-emoji><b>
-Выберете количество подписчиков: от 1 до 1.00.000 человек
-</b><a href="https://t.me/ineedforyou/5">Курс для каждой услуги</a>
-        """
-    else:  # views
-        text = """
-<tg-emoji emoji-id="5870729082517328189">📊</tg-emoji><b>Тип услуги: Просмотры</b><tg-emoji emoji-id="5870994129244131212">👤</tg-emoji><b>
-Выберете количество подписчиков: от 1 до 100.000 человек
-</b><a href="https://t.me/ineedforyou/5">Курс для каждой услуги</a>
-        """
-
-    async with aiohttp.ClientSession() as session:
-        try:
-            await call.message.delete()
-        except Exception:
-            pass
-
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": call.from_user.id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        }
-
-        async with session.post(url, json=payload) as resp:
-            if resp.status != 200:
-                logging.error(f"Failed to send service choice message via direct API: {await resp.text()}")
-                await call.message.answer(
-                    text.replace("<tg-emoji", "<!-- tg-emoji").replace("</tg-emoji>", "-->"),
-                    parse_mode="HTML",
-                    disable_web_page_preview=True
-                )
-
+@dp.callback_query(F.data == "views")
+async def choose_views(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    if await check_ban_and_terms(call.from_user.id):
+        return
+    await state.update_data(service="views")
+    # Для просмотров нет подменю, сразу запрашиваем количество
+    await call.message.edit_text("Введите количество просмотров:")
     await state.set_state(OrderState.waiting_quantity)
 
+@dp.callback_query(F.data == "reactions")
+async def choose_reactions(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    if await check_ban_and_terms(call.from_user.id):
+        return
+    await state.update_data(service="reactions")
+    
+    # Показываем меню выбора типа реакций
+    kb = InlineKeyboardBuilder()
+    for key, name in REACTION_TYPES.items():
+        kb.button(text=name, callback_data=f"react_type_{key}")
+    kb.button(text="◀️ Назад к выбору услуги", callback_data="order")
+    kb.adjust(2)
+    
+    await call.message.edit_text(
+        "Выберите тип реакций:",
+        reply_markup=kb.as_markup()
+    )
+    await state.set_state(ReactionsType.waiting_reaction_type)
+
+# ====== ОБРАБОТЧИКИ ДЛЯ ПОДПИСЧИКОВ (выбор длительности) ======
+@dp.callback_query(SubscribersDuration.waiting_duration, F.data.startswith("sub_dur_"))
+async def process_subscribers_duration(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    duration_key = call.data.split("_")[2]  # sub_dur_day -> day
+    duration_name = SUBSCRIBER_DURATIONS[duration_key]
+    await state.update_data(subtype=duration_name, duration_key=duration_key)
+    await call.message.edit_text("Введите количество подписчиков:")
+    await state.set_state(OrderState.waiting_quantity)
+
+# ====== ОБРАБОТЧИКИ ДЛЯ РЕАКЦИЙ (выбор типа) ======
+@dp.callback_query(ReactionsType.waiting_reaction_type, F.data.startswith("react_type_"))
+async def process_reaction_type(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    type_key = call.data.split("_")[2]  # react_type_custom -> custom
+    type_name = REACTION_TYPES[type_key]
+    await state.update_data(reaction_type_key=type_key, reaction_type_name=type_name)
+    
+    if type_key == "emoji_list":
+        # Показываем клавиатуру с эмодзи
+        kb = InlineKeyboardBuilder()
+        for emoji in EMOJI_LIST:
+            kb.button(text=emoji, callback_data=f"react_emoji_{emoji}")
+        kb.button(text="◀️ Назад к типам реакций", callback_data="reactions")
+        kb.adjust(3)
+        await call.message.edit_text(
+            "Выберите эмодзи:",
+            reply_markup=kb.as_markup()
+        )
+        await state.set_state(ReactionsType.waiting_reaction_emoji)
+    else:
+        # Для остальных типов сразу запрашиваем количество
+        await call.message.edit_text("Введите количество реакций:")
+        await state.set_state(OrderState.waiting_quantity)
+
+@dp.callback_query(ReactionsType.waiting_reaction_emoji, F.data.startswith("react_emoji_"))
+async def process_reaction_emoji(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    emoji = call.data.split("_")[2]  # react_emoji_❤️ -> ❤️
+    await state.update_data(selected_emoji=emoji)
+    await call.message.edit_text("Введите количество реакций:")
+    await state.set_state(OrderState.waiting_quantity)
+
+# ====== ВВОД КОЛИЧЕСТВА (общий для всех) ======
 @dp.message(OrderState.waiting_quantity)
 async def get_quantity(message: Message, state: FSMContext):
     if await check_ban_and_terms(message.from_user.id):
@@ -283,12 +354,13 @@ async def get_quantity(message: Message, state: FSMContext):
     quantity = int(message.text)
     data = await state.get_data()
     service = data["service"]
-    price = quantity * PRICES[service]
+    # Цена за единицу = 1 рубль (PRICES[service] == 1.0)
+    price = quantity * PRICES[service]  # пока 1 рубль за единицу
     await state.update_data(quantity=quantity, price=price)
     await message.answer(f"💰 Стоимость: {price} руб.\n\nОтправьте ссылку:")
     await state.set_state(OrderState.waiting_link)
 
-# ====== ОБРАБОТКА ССЫЛКИ ======
+# ====== ОБРАБОТКА ССЫЛКИ (сохраняем заказ) ======
 @dp.message(OrderState.waiting_link)
 async def get_link(message: Message, state: FSMContext):
     if await check_ban_and_terms(message.from_user.id):
@@ -301,6 +373,17 @@ async def get_link(message: Message, state: FSMContext):
     service = data['service']
     quantity = data['quantity']
     price = data['price']
+
+    # Формируем описание заказа с учётом подтипа
+    description = f"Услуга: {service}"
+    if service == "subscribers" and 'subtype' in data:
+        description += f", длительность: {data['subtype']}"
+    elif service == "reactions":
+        if 'reaction_type_name' in data:
+            description += f", тип: {data['reaction_type_name']}"
+            if data.get('reaction_type_key') == 'emoji_list' and 'selected_emoji' in data:
+                description += f", эмодзи: {data['selected_emoji']}"
+    description += f", кол-во: {quantity}"
 
     try:
         await database.create_order(
@@ -317,8 +400,8 @@ async def get_link(message: Message, state: FSMContext):
         await message.answer("Ошибка при создании заказа. Попробуйте позже.")
         return await state.clear()
 
-    # Сохраняем order_id в state
-    await state.update_data(order_id=order_id)
+    # Сохраняем order_id в state для дальнейшего выбора оплаты
+    await state.update_data(order_id=order_id, description=description)
 
     # Предлагаем выбрать способ оплаты
     kb = InlineKeyboardBuilder()
@@ -328,12 +411,12 @@ async def get_link(message: Message, state: FSMContext):
     kb.adjust(1)
 
     await message.answer(
-        "✅ Заказ предварительно сохранён. Теперь выберите способ оплаты:",
+        f"✅ Заказ предварительно сохранён. Информация:\n{description}\nСумма: {price} руб.\n\nТеперь выберите способ оплаты:",
         reply_markup=kb.as_markup()
     )
     await state.set_state(PaymentMethodChoice.choosing_method)
 
-# ====== ФУНКЦИЯ ПРЯМОГО ЗАПРОСА К ЮKASSA (рабочая) ======
+# ====== ФУНКЦИЯ ПРЯМОГО ЗАПРОСА К ЮKASSA ======
 async def create_yookassa_payment(amount: float, description: str, order_id: str, user_id: int):
     auth = base64.b64encode(f"{YOOKASSA_SHOP_ID}:{YOOKASSA_SECRET_KEY}".encode()).decode()
     headers = {
@@ -385,14 +468,13 @@ async def pay_with_yookassa(call: CallbackQuery, state: FSMContext):
         return
 
     price = order[4]
-    service = order[2]
-    quantity = order[3]
+    description = data.get('description', f"Заказ {order_id}")
     user_id = call.from_user.id
 
     try:
         payment_data = await create_yookassa_payment(
             amount=price,
-            description=f"Заказ {order_id}: {service} x{quantity}",
+            description=description,
             order_id=order_id,
             user_id=user_id
         )
@@ -414,7 +496,7 @@ async def pay_with_yookassa(call: CallbackQuery, state: FSMContext):
 
         await call.message.edit_text(
             f"✅ Заказ №{order_id} готов к оплате через ЮKassa!\n\n"
-            f"Услуга: {service}\nКоличество: {quantity}\nСумма: {price:.2f} руб.\n\n"
+            f"{description}\nСумма: {price:.2f} руб.\n\n"
             f"Для оплаты перейдите по ссылке ниже. После успешной оплаты заказ будет подтверждён автоматически.",
             reply_markup=kb.as_markup(),
             disable_web_page_preview=True
@@ -468,15 +550,14 @@ async def pay_with_heleket(call: CallbackQuery, state: FSMContext):
         return
 
     price = order[4]
-    service = order[2]
-    quantity = order[3]
+    description = data.get('description', f"Заказ {order_id}")
     user_id = call.from_user.id
 
     try:
         payment_data = await create_heleket_payment(
             amount=price,
             order_id=order_id,
-            description=f"Заказ {order_id}: {service} x{quantity}",
+            description=description,
             user_id=user_id
         )
 
@@ -497,7 +578,7 @@ async def pay_with_heleket(call: CallbackQuery, state: FSMContext):
 
         await call.message.edit_text(
             f"✅ Заказ №{order_id} готов к оплате через Heleket!\n\n"
-            f"Услуга: {service}\nКоличество: {quantity}\nСумма: {price:.2f} руб.\n\n"
+            f"{description}\nСумма: {price:.2f} руб.\n\n"
             f"Для оплаты перейдите по ссылке ниже. После успешной оплаты заказ будет подтверждён автоматически.",
             reply_markup=kb.as_markup(),
             disable_web_page_preview=True
@@ -691,9 +772,9 @@ async def calc_menu(call: CallbackQuery):
     text = """
 <b>Выберите услугу для подсчета стоимости</b>.
 <blockquote><tg-emoji emoji-id="5870994129244131212">👤</tg-emoji><b>Нынешний курс:
-Подписчики: 1 человек - 0.02₽
-Реакции: 1 реакция - 0.01₽
-Просмотры: 1 реакция - 0.01₽</b>
+Подписчики: 1 человек - 1₽
+Реакции: 1 реакция - 1₽
+Просмотры: 1 просмотр - 1₽</b>
 </blockquote>"""
 
     async with aiohttp.ClientSession() as session:
@@ -733,6 +814,7 @@ async def calc_choose(call: CallbackQuery, state: FSMContext):
     if await check_ban_and_terms(call.from_user.id):
         return
     service = call.data.split("_")[1]
+    # Для калькулятора мы не храним подтипы, просто считаем цену
     await state.update_data(service=service)
     await call.message.answer("Введите количество:")
     await state.set_state(CalcState.waiting_quantity)
@@ -749,7 +831,7 @@ async def calc_result(message: Message, state: FSMContext):
     if service not in PRICES:
         await state.clear()
         return await message.answer("Ошибка: услуга не найдена. Начните заново.")
-    price = quantity * PRICES[service]
+    price = quantity * PRICES[service]  # теперь 1 рубль за единицу
     await message.answer(f"💰 Стоимость будет: {price} руб.")
     await state.clear()
 
