@@ -9,9 +9,9 @@ YOOKASSA_SECRET_KEY = "test_W6lncrq6m_3IfpjMqCBLPUzpqcVm6BiHcKAJZ_y-yos"
 YOOKASSA_RETURN_URL = "https://t.me/Winixibot"  # куда вернуться после оплаты
 
 #Крипта(касса(Heleket))
-HELEKET_API_KEY = "ваш_api_ключ"
+HELEKET_API_KEY = "0c2dceb5-6400-4678-ad6a-52922d3d4ea4"
 HELEKET_API_URL = "https://api.heleket.com/v1"  # уточните в документации
-HELEKET_RETURN_URL = "https://t.me/your_bot_username"  # куда вернуться после оплаты
+HELEKET_RETURN_URL = "https://t.me/Winixibot"  # куда вернуться после оплаты
 
 #Админы
 ADMINS = [6384359588]  # ID админов
