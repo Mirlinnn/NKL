@@ -6,6 +6,7 @@ import aiohttp
 import json
 import uuid
 import base64
+import hashlib
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -16,7 +17,7 @@ from aiogram.exceptions import TelegramForbiddenError
 from config import (
     BOT_TOKEN, ADMINS as STATIC_ADMINS,
     YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, YOOKASSA_RETURN_URL,
-    HELEKET_API_KEY, HELEKET_API_URL, HELEKET_RETURN_URL
+    HELEKET_MERCHANT_ID, HELEKET_API_KEY, HELEKET_API_URL, HELEKET_RETURN_URL
 )
 import database
 
@@ -55,23 +56,20 @@ class PaymentState(StatesGroup):
     waiting_for_payment = State()
 
 # ====== Цены и параметры ======
-# Цена за единицу для просмотров и реакций (1 рубль за 1 единицу)
 PRICES = {
     "views": 1.0,
     "reactions": 1.0
 }
 
-# Цены для подписчиков за 100 человек в зависимости от длительности
 SUBSCRIBER_PRICES = {
-    "day": 1.0,      # 1 день: 100 чел = 1 рубль
-    "3days": 2.5,    # 3 дня: 100 чел = 2.5 рубля
-    "7days": 3.0,    # 7 дней: 100 чел = 3 рубля
-    "30days": 5.0,   # 30 дней: 100 чел = 5 рублей
-    "90days": 7.0,   # 90 дней: 100 чел = 7 рублей (было 60, но в запросе 60? я поставлю 90 как просили)
-    "forever": 10.0  # Навсегда: 100 чел = 10 рублей
+    "day": 1.0,
+    "3days": 2.5,
+    "7days": 3.0,
+    "30days": 5.0,
+    "90days": 7.0,
+    "forever": 10.0
 }
 
-# Названия длительностей на русском
 SUBSCRIBER_DURATIONS = {
     "day": "1 день",
     "3days": "3 дня",
@@ -81,7 +79,6 @@ SUBSCRIBER_DURATIONS = {
     "forever": "Навсегда"
 }
 
-# Типы реакций на русском
 REACTION_TYPES = {
     "custom": "Кастомные",
     "positive": "Позитивные",
@@ -89,7 +86,6 @@ REACTION_TYPES = {
     "emoji_list": "Эмодзи из списка"
 }
 
-# Список эмодзи для выбора
 EMOJI_LIST = ["❤️", "⚡", "👍", "💩", "🖕", "👨‍💻"]
 
 # ====== Генерация ID заказа ======
@@ -150,8 +146,8 @@ async def show_main_menu(chat_id: int):
 <b>Приветствую!</b> ✈️
 <b>Добро пожаловать в бота для накрутки статистики пользователей, просмотров и реакций
 
-</b><blockquote>👤 <b>Тех.поддержка: @winix_supports
-</b>📈 <b>Наш канал: @winix_channell</b></blockquote>
+</b><blockquote>👤 <b>Тех.поддержка: @support_username
+</b>📈 <b>Наш канал: @channel_username</b></blockquote>
 
 <a href="https://t.me/your_offer_link">Договор оферты</a> • <a href="https://t.me/your_terms_link">Пользовательское соглашение</a>
     """
@@ -196,7 +192,7 @@ async def start_handler(message: Message):
         return
     await show_main_menu(message.chat.id)
 
-# ====== ЗАКАЗ (главное меню выбора услуги) ======
+# ====== ЗАКАЗ ======
 @dp.callback_query(F.data == "order")
 async def order_menu(call: CallbackQuery):
     await call.answer()
@@ -259,7 +255,7 @@ async def order_menu(call: CallbackQuery):
                     disable_web_page_preview=True
                 )
 
-# ====== ОБРАБОТЧИКИ ВЫБОРА ОСНОВНОЙ УСЛУГИ ======
+# ====== ВЫБОР ОСНОВНОЙ УСЛУГИ ======
 @dp.callback_query(F.data == "subscribers")
 async def choose_subscribers(call: CallbackQuery, state: FSMContext):
     await call.answer()
@@ -267,7 +263,6 @@ async def choose_subscribers(call: CallbackQuery, state: FSMContext):
         return
     await state.update_data(service="subscribers")
     
-    # Показываем меню выбора длительности
     kb = InlineKeyboardBuilder()
     for key, name in SUBSCRIBER_DURATIONS.items():
         price = SUBSCRIBER_PRICES[key]
@@ -287,7 +282,6 @@ async def choose_views(call: CallbackQuery, state: FSMContext):
     if await check_ban_and_terms(call.from_user.id):
         return
     await state.update_data(service="views")
-    # Для просмотров нет подменю, сразу запрашиваем количество (минимум 1)
     await call.message.edit_text("Введите количество просмотров (минимум 1):")
     await state.set_state(OrderState.waiting_quantity)
 
@@ -298,7 +292,6 @@ async def choose_reactions(call: CallbackQuery, state: FSMContext):
         return
     await state.update_data(service="reactions")
     
-    # Показываем меню выбора типа реакций
     kb = InlineKeyboardBuilder()
     for key, name in REACTION_TYPES.items():
         kb.button(text=name, callback_data=f"react_type_{key}")
@@ -311,7 +304,7 @@ async def choose_reactions(call: CallbackQuery, state: FSMContext):
     )
     await state.set_state(ReactionsType.waiting_reaction_type)
 
-# ====== ОБРАБОТЧИКИ ДЛЯ ПОДПИСЧИКОВ (выбор длительности) ======
+# ====== ОБРАБОТЧИКИ ДЛЯ ПОДПИСЧИКОВ ======
 @dp.callback_query(SubscribersDuration.waiting_duration, F.data.startswith("sub_dur_"))
 async def process_subscribers_duration(call: CallbackQuery, state: FSMContext):
     await call.answer()
@@ -326,7 +319,7 @@ async def process_subscribers_duration(call: CallbackQuery, state: FSMContext):
     )
     await state.set_state(OrderState.waiting_quantity)
 
-# ====== ОБРАБОТЧИКИ ДЛЯ РЕАКЦИЙ (выбор типа) ======
+# ====== ОБРАБОТЧИКИ ДЛЯ РЕАКЦИЙ ======
 @dp.callback_query(ReactionsType.waiting_reaction_type, F.data.startswith("react_type_"))
 async def process_reaction_type(call: CallbackQuery, state: FSMContext):
     await call.answer()
@@ -335,7 +328,6 @@ async def process_reaction_type(call: CallbackQuery, state: FSMContext):
     await state.update_data(reaction_type_key=type_key, reaction_type_name=type_name)
     
     if type_key == "emoji_list":
-        # Показываем клавиатуру с эмодзи
         kb = InlineKeyboardBuilder()
         for emoji in EMOJI_LIST:
             kb.button(text=emoji, callback_data=f"react_emoji_{emoji}")
@@ -347,7 +339,6 @@ async def process_reaction_type(call: CallbackQuery, state: FSMContext):
         )
         await state.set_state(ReactionsType.waiting_reaction_emoji)
     else:
-        # Для остальных типов сразу запрашиваем количество (минимум 1)
         await call.message.edit_text("Введите количество реакций (минимум 1):")
         await state.set_state(OrderState.waiting_quantity)
 
@@ -359,7 +350,7 @@ async def process_reaction_emoji(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text("Введите количество реакций (минимум 1):")
     await state.set_state(OrderState.waiting_quantity)
 
-# ====== ВВОД КОЛИЧЕСТВА (с проверкой минимума и кратности для подписчиков) ======
+# ====== ВВОД КОЛИЧЕСТВА ======
 @dp.message(OrderState.waiting_quantity)
 async def get_quantity(message: Message, state: FSMContext):
     if await check_ban_and_terms(message.from_user.id):
@@ -371,7 +362,6 @@ async def get_quantity(message: Message, state: FSMContext):
     data = await state.get_data()
     service = data["service"]
 
-    # Проверки в зависимости от услуги
     if service == "subscribers":
         if quantity < 100:
             return await message.answer("Минимальное количество подписчиков — 100.")
@@ -379,10 +369,10 @@ async def get_quantity(message: Message, state: FSMContext):
             return await message.answer("Количество подписчиков должно быть кратно 100.")
         price_per_100 = data.get("price_per_100")
         price = (quantity / 100) * price_per_100
-    elif service == "views" or service == "reactions":
+    elif service in ("views", "reactions"):
         if quantity < 1:
             return await message.answer("Минимальное количество — 1.")
-        price = quantity * PRICES[service]  # 1 рубль за единицу
+        price = quantity * PRICES[service]
     else:
         return await message.answer("Ошибка: неизвестная услуга.")
     
@@ -390,7 +380,7 @@ async def get_quantity(message: Message, state: FSMContext):
     await message.answer(f"💰 Стоимость: {price:.2f} руб.\n\nОтправьте ссылку:")
     await state.set_state(OrderState.waiting_link)
 
-# ====== ОБРАБОТКА ССЫЛКИ (сохраняем заказ) ======
+# ====== ОБРАБОТКА ССЫЛКИ ======
 @dp.message(OrderState.waiting_link)
 async def get_link(message: Message, state: FSMContext):
     if await check_ban_and_terms(message.from_user.id):
@@ -404,7 +394,7 @@ async def get_link(message: Message, state: FSMContext):
     quantity = data['quantity']
     price = data['price']
 
-    # Формируем описание заказа с учётом подтипа
+    # Формируем описание заказа
     if service == "subscribers":
         description = f"Подписчики, длительность: {data['subtype']}, кол-во: {quantity}"
     elif service == "reactions":
@@ -430,10 +420,9 @@ async def get_link(message: Message, state: FSMContext):
         await message.answer("Ошибка при создании заказа. Попробуйте позже.")
         return await state.clear()
 
-    # Сохраняем order_id в state для дальнейшего выбора оплаты
     await state.update_data(order_id=order_id, description=description)
 
-    # Предлагаем выбрать способ оплаты
+    # Выбор способа оплаты
     kb = InlineKeyboardBuilder()
     kb.button(text="💳 Банковская карта (ЮKassa)", callback_data="pay_yookassa")
     kb.button(text="₿ Криптовалюта (Heleket)", callback_data="pay_heleket")
@@ -446,7 +435,7 @@ async def get_link(message: Message, state: FSMContext):
     )
     await state.set_state(PaymentMethodChoice.choosing_method)
 
-# ====== ФУНКЦИЯ ПРЯМОГО ЗАПРОСА К ЮKASSA ======
+# ====== ФУНКЦИИ ДЛЯ ЮKASSA ======
 async def create_yookassa_payment(amount: float, description: str, order_id: str, user_id: int):
     auth = base64.b64encode(f"{YOOKASSA_SHOP_ID}:{YOOKASSA_SECRET_KEY}".encode()).decode()
     headers = {
@@ -480,7 +469,6 @@ async def create_yookassa_payment(amount: float, description: str, order_id: str
                 raise Exception(f"YooKassa error {resp.status}: {response_text}")
             return json.loads(response_text)
 
-# ====== ОБРАБОТЧИК ВЫБОРА ЮKASSA ======
 @dp.callback_query(F.data == "pay_yookassa")
 async def pay_with_yookassa(call: CallbackQuery, state: FSMContext):
     await call.answer()
@@ -538,31 +526,59 @@ async def pay_with_yookassa(call: CallbackQuery, state: FSMContext):
         await call.message.answer("Не удалось создать платёж. Попробуйте позже.")
         await state.clear()
 
-# ====== ФУНКЦИЯ СОЗДАНИЯ ПЛАТЕЖА HELEKET ======
+# ====== ФУНКЦИИ ДЛЯ HELEKET ======
+def generate_heleket_sign(data: dict, api_key: str) -> str:
+    """Генерирует подпись для запроса к Heleket API."""
+    json_data = json.dumps(data, separators=(',', ':'))
+    base64_data = base64.b64encode(json_data.encode()).decode()
+    return hashlib.md5((base64_data + api_key).encode()).hexdigest()
+
 async def create_heleket_payment(amount: float, order_id: str, description: str, user_id: int):
-    auth = base64.b64encode(f"{HELEKET_API_KEY}:".encode()).decode().strip()
-    headers = {
-        "Authorization": f"Basic {auth}",
-        "Content-Type": "application/json"
-    }
-    data = {
+    """Создаёт платёж через Heleket."""
+    payload = {
         "amount": f"{amount:.2f}",
-        "currency": "RUB",
+        "currency": "USD",  # Валюта вашего магазина, можно RUB, если поддерживается
         "order_id": order_id,
-        "description": description,
-        "callback_url": "https://your-server.com/heleket-webhook",  # замените на ваш URL
-        "success_url": YOOKASSA_RETURN_URL
+        "url_callback": "https://your-server.com/heleket-webhook",  # Замените на реальный URL вебхука, если используете
+        "url_success": HELEKET_RETURN_URL,
+        # Дополнительные параметры при необходимости:
+        # "network": "tron",  # если хотите зафиксировать сеть
+        # "to_currency": "USDT",
+        # "lifetime": 3600,
+    }
+    sign = generate_heleket_sign(payload, HELEKET_API_KEY)
+    headers = {
+        "merchant": HELEKET_MERCHANT_ID,
+        "sign": sign,
+        "Content-Type": "application/json"
     }
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(f"{HELEKET_API_URL}/invoice/create", headers=headers, json=data) as resp:
+        async with session.post(f"{HELEKET_API_URL}/payment", headers=headers, json=payload) as resp:
             response_json = await resp.json()
             logging.info(f"Heleket response: {response_json}")
-            if resp.status != 200:
-                raise Exception(f"Heleket error {resp.status}: {response_json}")
-            return response_json
+            if response_json.get('state') != 0:
+                raise Exception(f"Heleket error: {response_json}")
+            return response_json['result']
 
-# ====== ОБРАБОТЧИК ВЫБОРА HELEKET ======
+async def check_heleket_payment(payment_uuid: str):
+    """Получает информацию о платеже по UUID."""
+    payload = {}  # Тело запроса пустое
+    sign = generate_heleket_sign(payload, HELEKET_API_KEY)
+    headers = {
+        "merchant": HELEKET_MERCHANT_ID,
+        "sign": sign,
+        "Content-Type": "application/json"
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{HELEKET_API_URL}/payment/info", headers=headers, json={"uuid": payment_uuid}) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            if data.get('state') != 0:
+                return None
+            return data['result'].get('payment_status')
+
 @dp.callback_query(F.data == "pay_heleket")
 async def pay_with_heleket(call: CallbackQuery, state: FSMContext):
     await call.answer()
@@ -584,23 +600,23 @@ async def pay_with_heleket(call: CallbackQuery, state: FSMContext):
     user_id = call.from_user.id
 
     try:
-        payment_data = await create_heleket_payment(
+        payment_result = await create_heleket_payment(
             amount=price,
             order_id=order_id,
             description=description,
             user_id=user_id
         )
 
-        payment_id = payment_data.get('id')
-        payment_url = payment_data.get('payment_url')
+        payment_uuid = payment_result.get('uuid')
+        payment_url = payment_result.get('url')
 
-        if not payment_id or not payment_url:
-            raise Exception("Missing payment_id or payment_url in Heleket response")
+        if not payment_uuid or not payment_url:
+            raise Exception("Missing uuid or url in Heleket response")
 
-        await database.update_order_payment_id(order_id, payment_id)
+        await database.update_order_payment_id(order_id, payment_uuid)
         await database.update_order_payment_method(order_id, "heleket")
 
-        logging.info(f"Order {order_id} updated with payment_id={payment_id}, method=heleket")
+        logging.info(f"Order {order_id} updated with payment_uuid={payment_uuid}, method=heleket")
 
         kb = InlineKeyboardBuilder()
         kb.button(text="₿ Оплатить криптовалютой", url=payment_url)
@@ -631,18 +647,10 @@ async def check_yookassa_payment(payment_id: str):
             data = await resp.json()
             return data.get('status')
 
-async def check_heleket_payment(payment_id: str):
-    auth = base64.b64encode(f"{HELEKET_API_KEY}:".encode()).decode().strip()
-    headers = {"Authorization": f"Basic {auth}"}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"{HELEKET_API_URL}/invoice/{payment_id}", headers=headers) as resp:
-            if resp.status != 200:
-                return None
-            data = await resp.json()
-            return data.get('status')
+# check_heleket_payment уже определена выше
 
-# ====== ФОНОВАЯ ЗАДАЧА ДЛЯ ПРОВЕРКИ СТАТУСОВ ======
 async def check_payments_status():
+    """Фоновая задача для проверки статусов всех ожидающих платежей."""
     while True:
         try:
             pending_orders = await database.get_pending_orders()
@@ -675,7 +683,7 @@ async def check_payments_status():
                         logging.warning(f"Payment {payment_id} not found or error")
                         continue
                     logging.info(f"Payment {payment_id} status: {status}")
-                    if status == 'succeeded':
+                    if status == 'succeeded' or status == 'paid':
                         await database.update_order_status(order_id, "PAID", f"Оплачено через {payment_method} (авто)")
 
                         user_id = order[1]
@@ -723,7 +731,7 @@ async def fixdb_command(message: Message):
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
-# ====== ОБРАБОТЧИКИ ПРИНЯТИЯ/ОТКЛОНЕНИЯ (для ручного режима) ======
+# ====== ОБРАБОТЧИКИ ПРИНЯТИЯ/ОТКЛОНЕНИЯ ======
 @dp.callback_query(F.data.startswith("accept_"))
 async def accept_order(call: CallbackQuery):
     await call.answer()
@@ -846,7 +854,6 @@ async def calc_choose(call: CallbackQuery, state: FSMContext):
     service = call.data.split("_")[1]
     await state.update_data(service=service)
     if service == "subscribers":
-        # Для калькулятора подписчиков нужно выбрать длительность
         kb = InlineKeyboardBuilder()
         for key, name in SUBSCRIBER_DURATIONS.items():
             price = SUBSCRIBER_PRICES[key]
@@ -857,7 +864,7 @@ async def calc_choose(call: CallbackQuery, state: FSMContext):
             "Выберите длительность для расчёта:",
             reply_markup=kb.as_markup()
         )
-        await state.set_state(CalcState.waiting_quantity)  # временно, но мы изменим
+        await state.set_state(CalcState.waiting_quantity)
     else:
         await call.message.answer("Введите количество:")
         await state.set_state(CalcState.waiting_quantity)
@@ -873,7 +880,6 @@ async def calc_subscribers_duration(call: CallbackQuery, state: FSMContext):
         f"Длительность: {duration_name}, цена {price_per_100}₽ за 100 чел.\n"
         "Введите количество подписчиков (минимум 100, кратно 100):"
     )
-    # состояние остаётся CalcState.waiting_quantity
 
 @dp.message(CalcState.waiting_quantity)
 async def calc_result(message: Message, state: FSMContext):
@@ -896,7 +902,7 @@ async def calc_result(message: Message, state: FSMContext):
         price = (quantity / 100) * price_per_100
         duration = data.get("duration", "")
         await message.answer(f"💰 Стоимость {quantity} подписчиков на {duration}: {price:.2f} руб.")
-    elif service == "views" or service == "reactions":
+    elif service in ("views", "reactions"):
         if quantity < 1:
             return await message.answer("Минимальное количество — 1.")
         price = quantity * PRICES[service]
