@@ -33,11 +33,11 @@ class OrderState(StatesGroup):
     waiting_link = State()
 
 class SubscribersDuration(StatesGroup):
-    waiting_duration = State()  # для выбора длительности подписчиков
+    waiting_duration = State()
 
 class ReactionsType(StatesGroup):
-    waiting_reaction_type = State()  # для выбора типа реакций
-    waiting_reaction_emoji = State()  # для выбора конкретного эмодзи из списка
+    waiting_reaction_type = State()
+    waiting_reaction_emoji = State()
 
 class PaymentMethodChoice(StatesGroup):
     choosing_method = State()
@@ -54,15 +54,24 @@ class BroadcastState(StatesGroup):
 class PaymentState(StatesGroup):
     waiting_for_payment = State()
 
-# ====== Цены ======
-# Цена за единицу (человек/реакция) = 1 рубль
+# ====== Цены и параметры ======
+# Цена за единицу для просмотров и реакций (1 рубль за 1 единицу)
 PRICES = {
-    "subscribers": 1.0,
     "views": 1.0,
     "reactions": 1.0
 }
 
-# Варианты длительности для подписчиков
+# Цены для подписчиков за 100 человек в зависимости от длительности
+SUBSCRIBER_PRICES = {
+    "day": 1.0,      # 1 день: 100 чел = 1 рубль
+    "3days": 2.5,    # 3 дня: 100 чел = 2.5 рубля
+    "7days": 3.0,    # 7 дней: 100 чел = 3 рубля
+    "30days": 5.0,   # 30 дней: 100 чел = 5 рублей
+    "90days": 7.0,   # 90 дней: 100 чел = 7 рублей (было 60, но в запросе 60? я поставлю 90 как просили)
+    "forever": 10.0  # Навсегда: 100 чел = 10 рублей
+}
+
+# Названия длительностей на русском
 SUBSCRIBER_DURATIONS = {
     "day": "1 день",
     "3days": "3 дня",
@@ -72,7 +81,7 @@ SUBSCRIBER_DURATIONS = {
     "forever": "Навсегда"
 }
 
-# Типы реакций
+# Типы реакций на русском
 REACTION_TYPES = {
     "custom": "Кастомные",
     "positive": "Позитивные",
@@ -261,12 +270,13 @@ async def choose_subscribers(call: CallbackQuery, state: FSMContext):
     # Показываем меню выбора длительности
     kb = InlineKeyboardBuilder()
     for key, name in SUBSCRIBER_DURATIONS.items():
-        kb.button(text=name, callback_data=f"sub_dur_{key}")
+        price = SUBSCRIBER_PRICES[key]
+        kb.button(text=f"{name} - {price}₽ за 100 чел", callback_data=f"sub_dur_{key}")
     kb.button(text="◀️ Назад к выбору услуги", callback_data="order")
     kb.adjust(2)
     
     await call.message.edit_text(
-        "Выберите длительность подписки:",
+        "Выберите длительность подписки (минимальный заказ — 100 человек):",
         reply_markup=kb.as_markup()
     )
     await state.set_state(SubscribersDuration.waiting_duration)
@@ -277,8 +287,8 @@ async def choose_views(call: CallbackQuery, state: FSMContext):
     if await check_ban_and_terms(call.from_user.id):
         return
     await state.update_data(service="views")
-    # Для просмотров нет подменю, сразу запрашиваем количество
-    await call.message.edit_text("Введите количество просмотров:")
+    # Для просмотров нет подменю, сразу запрашиваем количество (минимум 1)
+    await call.message.edit_text("Введите количество просмотров (минимум 1):")
     await state.set_state(OrderState.waiting_quantity)
 
 @dp.callback_query(F.data == "reactions")
@@ -305,17 +315,22 @@ async def choose_reactions(call: CallbackQuery, state: FSMContext):
 @dp.callback_query(SubscribersDuration.waiting_duration, F.data.startswith("sub_dur_"))
 async def process_subscribers_duration(call: CallbackQuery, state: FSMContext):
     await call.answer()
-    duration_key = call.data.split("_")[2]  # sub_dur_day -> day
+    duration_key = call.data.split("_")[2]
     duration_name = SUBSCRIBER_DURATIONS[duration_key]
-    await state.update_data(subtype=duration_name, duration_key=duration_key)
-    await call.message.edit_text("Введите количество подписчиков:")
+    price_per_100 = SUBSCRIBER_PRICES[duration_key]
+    await state.update_data(subtype=duration_name, duration_key=duration_key, price_per_100=price_per_100)
+    await call.message.edit_text(
+        f"Выбрана длительность: {duration_name}\n"
+        f"Цена: {price_per_100}₽ за 100 человек\n\n"
+        "Введите количество подписчиков (минимум 100, кратно 100):"
+    )
     await state.set_state(OrderState.waiting_quantity)
 
 # ====== ОБРАБОТЧИКИ ДЛЯ РЕАКЦИЙ (выбор типа) ======
 @dp.callback_query(ReactionsType.waiting_reaction_type, F.data.startswith("react_type_"))
 async def process_reaction_type(call: CallbackQuery, state: FSMContext):
     await call.answer()
-    type_key = call.data.split("_")[2]  # react_type_custom -> custom
+    type_key = call.data.split("_")[2]
     type_name = REACTION_TYPES[type_key]
     await state.update_data(reaction_type_key=type_key, reaction_type_name=type_name)
     
@@ -332,32 +347,47 @@ async def process_reaction_type(call: CallbackQuery, state: FSMContext):
         )
         await state.set_state(ReactionsType.waiting_reaction_emoji)
     else:
-        # Для остальных типов сразу запрашиваем количество
-        await call.message.edit_text("Введите количество реакций:")
+        # Для остальных типов сразу запрашиваем количество (минимум 1)
+        await call.message.edit_text("Введите количество реакций (минимум 1):")
         await state.set_state(OrderState.waiting_quantity)
 
 @dp.callback_query(ReactionsType.waiting_reaction_emoji, F.data.startswith("react_emoji_"))
 async def process_reaction_emoji(call: CallbackQuery, state: FSMContext):
     await call.answer()
-    emoji = call.data.split("_")[2]  # react_emoji_❤️ -> ❤️
+    emoji = call.data.split("_")[2]
     await state.update_data(selected_emoji=emoji)
-    await call.message.edit_text("Введите количество реакций:")
+    await call.message.edit_text("Введите количество реакций (минимум 1):")
     await state.set_state(OrderState.waiting_quantity)
 
-# ====== ВВОД КОЛИЧЕСТВА (общий для всех) ======
+# ====== ВВОД КОЛИЧЕСТВА (с проверкой минимума и кратности для подписчиков) ======
 @dp.message(OrderState.waiting_quantity)
 async def get_quantity(message: Message, state: FSMContext):
     if await check_ban_and_terms(message.from_user.id):
         return await state.clear()
     if not message.text or not message.text.isdigit():
         return await message.answer("Введите число!")
+    
     quantity = int(message.text)
     data = await state.get_data()
     service = data["service"]
-    # Цена за единицу = 1 рубль (PRICES[service] == 1.0)
-    price = quantity * PRICES[service]  # пока 1 рубль за единицу
+
+    # Проверки в зависимости от услуги
+    if service == "subscribers":
+        if quantity < 100:
+            return await message.answer("Минимальное количество подписчиков — 100.")
+        if quantity % 100 != 0:
+            return await message.answer("Количество подписчиков должно быть кратно 100.")
+        price_per_100 = data.get("price_per_100")
+        price = (quantity / 100) * price_per_100
+    elif service == "views" or service == "reactions":
+        if quantity < 1:
+            return await message.answer("Минимальное количество — 1.")
+        price = quantity * PRICES[service]  # 1 рубль за единицу
+    else:
+        return await message.answer("Ошибка: неизвестная услуга.")
+    
     await state.update_data(quantity=quantity, price=price)
-    await message.answer(f"💰 Стоимость: {price} руб.\n\nОтправьте ссылку:")
+    await message.answer(f"💰 Стоимость: {price:.2f} руб.\n\nОтправьте ссылку:")
     await state.set_state(OrderState.waiting_link)
 
 # ====== ОБРАБОТКА ССЫЛКИ (сохраняем заказ) ======
@@ -375,15 +405,15 @@ async def get_link(message: Message, state: FSMContext):
     price = data['price']
 
     # Формируем описание заказа с учётом подтипа
-    description = f"Услуга: {service}"
-    if service == "subscribers" and 'subtype' in data:
-        description += f", длительность: {data['subtype']}"
+    if service == "subscribers":
+        description = f"Подписчики, длительность: {data['subtype']}, кол-во: {quantity}"
     elif service == "reactions":
-        if 'reaction_type_name' in data:
-            description += f", тип: {data['reaction_type_name']}"
-            if data.get('reaction_type_key') == 'emoji_list' and 'selected_emoji' in data:
-                description += f", эмодзи: {data['selected_emoji']}"
-    description += f", кол-во: {quantity}"
+        base = f"Реакции, тип: {data['reaction_type_name']}"
+        if data.get('reaction_type_key') == 'emoji_list' and 'selected_emoji' in data:
+            base += f", эмодзи: {data['selected_emoji']}"
+        description = f"{base}, кол-во: {quantity}"
+    else:  # views
+        description = f"Просмотры, кол-во: {quantity}"
 
     try:
         await database.create_order(
@@ -411,7 +441,7 @@ async def get_link(message: Message, state: FSMContext):
     kb.adjust(1)
 
     await message.answer(
-        f"✅ Заказ предварительно сохранён. Информация:\n{description}\nСумма: {price} руб.\n\nТеперь выберите способ оплаты:",
+        f"✅ Заказ предварительно сохранён.\n{description}\nСумма: {price:.2f} руб.\n\nТеперь выберите способ оплаты:",
         reply_markup=kb.as_markup()
     )
     await state.set_state(PaymentMethodChoice.choosing_method)
@@ -772,9 +802,9 @@ async def calc_menu(call: CallbackQuery):
     text = """
 <b>Выберите услугу для подсчета стоимости</b>.
 <blockquote><tg-emoji emoji-id="5870994129244131212">👤</tg-emoji><b>Нынешний курс:
-Подписчики: 1 человек - 1₽
-Реакции: 1 реакция - 1₽
-Просмотры: 1 просмотр - 1₽</b>
+Подписчики: от 1₽ за 100 чел (в зависимости от длительности)
+Реакции: 1₽ за 1 реакцию
+Просмотры: 1₽ за 1 просмотр</b>
 </blockquote>"""
 
     async with aiohttp.ClientSession() as session:
@@ -814,10 +844,36 @@ async def calc_choose(call: CallbackQuery, state: FSMContext):
     if await check_ban_and_terms(call.from_user.id):
         return
     service = call.data.split("_")[1]
-    # Для калькулятора мы не храним подтипы, просто считаем цену
     await state.update_data(service=service)
-    await call.message.answer("Введите количество:")
-    await state.set_state(CalcState.waiting_quantity)
+    if service == "subscribers":
+        # Для калькулятора подписчиков нужно выбрать длительность
+        kb = InlineKeyboardBuilder()
+        for key, name in SUBSCRIBER_DURATIONS.items():
+            price = SUBSCRIBER_PRICES[key]
+            kb.button(text=f"{name} - {price}₽ за 100 чел", callback_data=f"calc_sub_dur_{key}")
+        kb.button(text="◀️ Назад", callback_data="calc")
+        kb.adjust(2)
+        await call.message.edit_text(
+            "Выберите длительность для расчёта:",
+            reply_markup=kb.as_markup()
+        )
+        await state.set_state(CalcState.waiting_quantity)  # временно, но мы изменим
+    else:
+        await call.message.answer("Введите количество:")
+        await state.set_state(CalcState.waiting_quantity)
+
+@dp.callback_query(CalcState.waiting_quantity, F.data.startswith("calc_sub_dur_"))
+async def calc_subscribers_duration(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    duration_key = call.data.split("_")[3]
+    price_per_100 = SUBSCRIBER_PRICES[duration_key]
+    duration_name = SUBSCRIBER_DURATIONS[duration_key]
+    await state.update_data(duration=duration_name, price_per_100=price_per_100, service="subscribers")
+    await call.message.edit_text(
+        f"Длительность: {duration_name}, цена {price_per_100}₽ за 100 чел.\n"
+        "Введите количество подписчиков (минимум 100, кратно 100):"
+    )
+    # состояние остаётся CalcState.waiting_quantity
 
 @dp.message(CalcState.waiting_quantity)
 async def calc_result(message: Message, state: FSMContext):
@@ -828,11 +884,26 @@ async def calc_result(message: Message, state: FSMContext):
     quantity = int(message.text)
     data = await state.get_data()
     service = data.get("service")
-    if service not in PRICES:
-        await state.clear()
-        return await message.answer("Ошибка: услуга не найдена. Начните заново.")
-    price = quantity * PRICES[service]  # теперь 1 рубль за единицу
-    await message.answer(f"💰 Стоимость будет: {price} руб.")
+
+    if service == "subscribers":
+        if quantity < 100:
+            return await message.answer("Минимальное количество подписчиков — 100.")
+        if quantity % 100 != 0:
+            return await message.answer("Количество подписчиков должно быть кратно 100.")
+        price_per_100 = data.get("price_per_100")
+        if price_per_100 is None:
+            return await message.answer("Ошибка: не выбрана длительность.")
+        price = (quantity / 100) * price_per_100
+        duration = data.get("duration", "")
+        await message.answer(f"💰 Стоимость {quantity} подписчиков на {duration}: {price:.2f} руб.")
+    elif service == "views" or service == "reactions":
+        if quantity < 1:
+            return await message.answer("Минимальное количество — 1.")
+        price = quantity * PRICES[service]
+        service_name = "просмотров" if service == "views" else "реакций"
+        await message.answer(f"💰 Стоимость {quantity} {service_name}: {price:.2f} руб.")
+    else:
+        await message.answer("Ошибка: неизвестная услуга.")
     await state.clear()
 
 # ====== ТЕХ. ПОДДЕРЖКА ======
