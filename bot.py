@@ -320,14 +320,17 @@ async def process_subscribers_duration(call: CallbackQuery, state: FSMContext):
     await state.set_state(OrderState.waiting_quantity)
 
 # ====== ОБРАБОТЧИКИ ДЛЯ РЕАКЦИЙ ======
-@dp.callback_query(ReactionsType.waiting_reaction_type, F.data.startswith("react_type_"))
+@dp.callback_query(ReactionsType.waiting_reaction_type, F.data.in_([f"react_type_{key}" for key in REACTION_TYPES.keys()]))
 async def process_reaction_type(call: CallbackQuery, state: FSMContext):
     await call.answer()
     type_key = call.data.split("_")[2]
+    logging.info(f"Reaction type selected: {type_key}")
+
     type_name = REACTION_TYPES[type_key]
     await state.update_data(reaction_type_key=type_key, reaction_type_name=type_name)
 
     if type_key == "emoji_list":
+        # Клавиатура с эмодзи (каждый эмодзи — отдельная инлайн-кнопка)
         kb = InlineKeyboardBuilder()
         for emoji in EMOJI_LIST:
             kb.button(text=emoji, callback_data=f"react_emoji_{emoji}")
@@ -346,6 +349,7 @@ async def process_reaction_type(call: CallbackQuery, state: FSMContext):
 async def process_reaction_emoji(call: CallbackQuery, state: FSMContext):
     await call.answer()
     emoji = call.data.split("_")[2]
+    logging.info(f"Reaction emoji selected: {emoji}")
     await state.update_data(selected_emoji=emoji)
     await call.message.edit_text("Введите количество реакций (минимум 1):")
     await state.set_state(OrderState.waiting_quantity)
@@ -531,7 +535,7 @@ async def create_heleket_payment(amount: float, order_id: str, description: str,
     """Создаёт платёж в USDT на сумму, равную amount (рубли -> USDT 1:1)."""
     payload = {
         "amount": f"{amount:.2f}",
-        "currency": "RUB",          # валюта счёта – USDT
+        "currency": "USDT",          # валюта счёта – USDT
         "order_id": order_id,
         # "network": "tron",          # при необходимости укажите сеть
     }
