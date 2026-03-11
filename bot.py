@@ -537,7 +537,7 @@ async def create_heleket_payment(amount: float, order_id: str, description: str,
     """Создаёт платёж через Heleket (исправленная версия с ручной сериализацией)."""
     payload = {
         "amount": f"{amount:.2f}",
-        "currency": "USD",
+        "currency": "RUB",
         "order_id": order_id,
     }
     # Сортируем ключи для стабильности (в алфавитном порядке)
@@ -577,7 +577,7 @@ async def create_heleket_payment(amount: float, order_id: str, description: str,
     """Создаёт платёж в USDT на сумму, равную amount (рубли -> USDT 1:1)."""
     payload = {
         "amount": f"{amount:.2f}",
-        "currency": "USDT",          # <-- меняем USD на USDT
+        "currency": "RUB",          # <-- меняем USD на USDT
         "order_id": order_id,
         # При необходимости можно указать сеть, например "network": "tron"
     }
