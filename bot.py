@@ -573,23 +573,37 @@ async def create_heleket_payment(amount: float, order_id: str, description: str,
                 raise Exception(f"Heleket error: {response_json}")
             return response_json['result']
 
-async def check_heleket_payment(payment_uuid: str):
-    """Получает информацию о платеже по UUID."""
-    payload = {}  # Тело запроса пустое
-    sign = generate_heleket_sign(payload, HELEKET_API_KEY)
+async def create_heleket_payment(amount: float, order_id: str, description: str, user_id: int):
+    """Создаёт платёж в USDT на сумму, равную amount (рубли -> USDT 1:1)."""
+    payload = {
+        "amount": f"{amount:.2f}",
+        "currency": "USDT",          # <-- меняем USD на USDT
+        "order_id": order_id,
+        # При необходимости можно указать сеть, например "network": "tron"
+    }
+    # Сортируем ключи для стабильной подписи
+    sorted_payload = {k: payload[k] for k in sorted(payload.keys())}
+    json_data = json.dumps(sorted_payload, separators=(',', ':'))
+    base64_data = base64.b64encode(json_data.encode()).decode()
+    api_key = HELEKET_API_KEY.strip()
+    merchant_id = HELEKET_MERCHANT_ID.strip()
+    sign = hashlib.md5((base64_data + api_key).encode()).hexdigest()
+
     headers = {
-        "merchant": HELEKET_MERCHANT_ID,
+        "merchant": merchant_id,
         "sign": sign,
         "Content-Type": "application/json"
     }
+
     async with aiohttp.ClientSession() as session:
-        async with session.post(f"{HELEKET_API_URL}/payment/info", headers=headers, json={"uuid": payment_uuid}) as resp:
+        async with session.post(f"{HELEKET_API_URL}/payment", headers=headers, data=json_data) as resp:
+            response_text = await resp.text()
             if resp.status != 200:
-                return None
-            data = await resp.json()
-            if data.get('state') != 0:
-                return None
-            return data['result'].get('payment_status')
+                raise Exception(f"Heleket HTTP error {resp.status}: {response_text}")
+            response_json = json.loads(response_text)
+            if response_json.get('state') != 0:
+                raise Exception(f"Heleket error: {response_json}")
+            return response_json['result']
 
 @dp.callback_query(F.data == "pay_heleket")
 async def pay_with_heleket(call: CallbackQuery, state: FSMContext):
