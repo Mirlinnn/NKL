@@ -1178,8 +1178,8 @@ async def broadcast_message(message: Message, state: FSMContext):
             await bot.copy_message(
                 chat_id=user_id,
                 from_chat_id=message.chat.id,
-                message_id=message.message_id,
-                disable_web_page_preview=True
+                message_id=message.message_id
+                # параметр disable_web_page_preview убран, так как он не поддерживается copy_message
             )
             sent += 1
             await asyncio.sleep(0.05)
