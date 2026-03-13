@@ -15,7 +15,3 @@ HELEKET_MERCHANT_ID = "0c2dceb5-6400-4678-ad6a-52922d3d4ea4"
 HELEKET_API_KEY = "vzBZhgi7O2gWduZltxTWWtLiwORxOzMwuP0iOQDTrI4FiaaopymkGQ87x6pM4ooWzxOGrfwwa3NatMJctWGuwNzM9ov1PUdM1DGPau8AqSSnarEQoNopKDnPHRjVney3"
 HELEKET_API_URL = "https://api.heleket.com/v1"
 HELEKET_RETURN_URL = "https://t.me/Winixibot"
-
-#Хс, нужно ли
-CARD_DETAILS = "💳 2200702011077075"
-CRYPTO_DETAILS = "💰 TON UQDIJouCK1D9eBJPbDAUtlUaLNJNOhADHtVpx1dK4qziqHGm"
