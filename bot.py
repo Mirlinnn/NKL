@@ -385,16 +385,19 @@ async def process_reaction_type(call: CallbackQuery, state: FSMContext):
 
 async def show_emoji_page(message: Message, state: FSMContext, page: int):
     data = await state.get_data()
-    current_page = data.get('emoji_page', page)
-    emoji_list = EMOJI_PAGES[current_page]
+    current_page = data.get('emoji_page', 0)
+    if page == current_page:
+        # Уже на этой странице, не редактируем
+        return
+    emoji_list = EMOJI_PAGES[page]
 
     kb = InlineKeyboardBuilder()
     for emoji in emoji_list:
         kb.button(text=emoji, callback_data=f"react_emoji_{emoji}")
     nav_row = []
-    if current_page > 0:
+    if page > 0:
         nav_row.append(InlineKeyboardButton(text="◀️ Назад", callback_data="emoji_prev"))
-    if current_page < len(EMOJI_PAGES) - 1:
+    if page < len(EMOJI_PAGES) - 1:
         nav_row.append(InlineKeyboardButton(text="Вперёд ▶️", callback_data="emoji_next"))
     if nav_row:
         kb.row(*nav_row)
@@ -402,26 +405,32 @@ async def show_emoji_page(message: Message, state: FSMContext, page: int):
     kb.adjust(3)
 
     await message.edit_text(
-        "Выберите эмодзи (страница {}):".format(current_page + 1),
+        "Выберите эмодзи (страница {}):".format(page + 1),
         reply_markup=kb.as_markup()
     )
-    await state.update_data(emoji_page=current_page)
+    await state.update_data(emoji_page=page)
 
 @dp.callback_query(ReactionsType.waiting_reaction_emoji, F.data == "emoji_next")
 async def emoji_next_page(call: CallbackQuery, state: FSMContext):
     await call.answer()
     data = await state.get_data()
     current_page = data.get('emoji_page', 0)
-    if current_page < len(EMOJI_PAGES) - 1:
-        await show_emoji_page(call.message, state, current_page + 1)
+    new_page = current_page + 1
+    if new_page < len(EMOJI_PAGES):
+        await show_emoji_page(call.message, state, new_page)
+    else:
+        await call.answer("Это последняя страница", show_alert=False)
 
 @dp.callback_query(ReactionsType.waiting_reaction_emoji, F.data == "emoji_prev")
 async def emoji_prev_page(call: CallbackQuery, state: FSMContext):
     await call.answer()
     data = await state.get_data()
     current_page = data.get('emoji_page', 0)
-    if current_page > 0:
-        await show_emoji_page(call.message, state, current_page - 1)
+    new_page = current_page - 1
+    if new_page >= 0:
+        await show_emoji_page(call.message, state, new_page)
+    else:
+        await call.answer("Это первая страница", show_alert=False)
 
 @dp.callback_query(ReactionsType.waiting_reaction_emoji, F.data.startswith("react_emoji_"))
 async def process_reaction_emoji(call: CallbackQuery, state: FSMContext):
@@ -1257,8 +1266,6 @@ async def unban_cmd(message: Message):
     await database.unban_user(user_id)
     await message.answer(f"Пользователь {user_id} разбанен.")
 
-# search уже определён выше
-
 @dp.message(Command("addadmin"))
 async def add_admin(message: Message):
     if not await is_owner(message.from_user.id):
@@ -1324,8 +1331,6 @@ async def main():
     for admin_id in STATIC_ADMINS:
         await database.add_admin(admin_id)
 
-    # Фоновая задача больше не нужна
-    # asyncio.create_task(check_payments_status())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
