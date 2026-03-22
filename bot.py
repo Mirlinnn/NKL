@@ -56,8 +56,12 @@ class BroadcastState(StatesGroup):
 class StopOrderReason(StatesGroup):
     waiting_reason = State()
 
+class BanReason(StatesGroup):
+    waiting_reason = State()
+
 # ====== Цены и параметры ======
 VIEWS_PRICE = 1.0
+STARTS_PRICE = 0.03  # цена за старт
 
 REACTION_PRICES = {
     "positive": 1/150,
@@ -103,13 +107,14 @@ EMOJI_LIST = ["👍", "🤡", "💩", "❤️", "🤝", "🖕", "👀", "🍌", 
 MIN_TOPUP_YOOKASSA = 1.0
 MIN_TOPUP_HELEKET = 5.0
 
+STARTS_MIN = 10
+
 # ====== Генерация ID заказа ======
 def generate_order_id(length=6):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 # ====== Проверка активности бота ======
 async def is_bot_available(user_id: int) -> bool:
-    """Проверяет, доступен ли бот для пользователя (не забанен, активен)."""
     if user_id == OWNER_ID or await database.is_admin(user_id):
         return True
     if await database.is_banned(user_id):
@@ -126,9 +131,11 @@ async def check_ban_and_terms(user_id: int) -> bool:
         else:
             await bot.send_message(user_id, "❌ Бот временно недоступен. Попробуйте позже.")
         return True
-    banned = await database.is_banned(user_id)
-    if banned:
-        await bot.send_message(user_id, "❌ Вы заблокированы.")
+
+    ban_info = await database.get_ban_info(user_id)
+    if ban_info and ban_info[0] == 1:
+        ban_reason = ban_info[3] or "Не указана"
+        await bot.send_message(user_id, f"❌ Вы заблокированы.\nПричина: {ban_reason}")
         return True
 
     if not await database.has_accepted_terms(user_id):
@@ -330,9 +337,9 @@ async def create_yookassa_topup(message: Message, state: FSMContext, amount: flo
         kb.button(text="💳 Оплатить картой", url=confirmation_url)
         kb.button(text="✅ Проверить оплату", callback_data=f"check_topup_{payment_id}")
         await message.answer(
-            f"Создан счёт на пополнение баланса на {amount:.2f} руб.\n"
-            "Перейдите по ссылке для оплаты. После оплаты нажмите «Проверить оплату».",
+            f"<emoji document_id=\"5427009714745517609\">✅</emoji><b>Создан счет на {amount:.2f} руб.</b>\nПосле оплаты нажмите на кнопку \"Проверить оплату\"",
             reply_markup=kb.as_markup(),
+            parse_mode="HTML",
             disable_web_page_preview=True
         )
         await state.clear()
@@ -358,9 +365,9 @@ async def create_heleket_topup(message: Message, state: FSMContext, amount: floa
         kb.button(text="₿ Оплатить криптовалютой", url=payment_url)
         kb.button(text="✅ Проверить оплату", callback_data=f"check_topup_{payment_uuid}")
         await message.answer(
-            f"Создан счёт на пополнение баланса на {amount:.2f} руб. (эквивалент в USDT).\n"
-            "Перейдите по ссылке для оплаты. После оплаты нажмите «Проверить оплату».",
+            f"<emoji document_id=\"5427009714745517609\">✅</emoji><b>Создан счет на {amount:.2f} руб.</b>\nПосле оплаты нажмите на кнопку \"Проверить оплату\"",
             reply_markup=kb.as_markup(),
+            parse_mode="HTML",
             disable_web_page_preview=True
         )
         await state.clear()
@@ -395,10 +402,13 @@ async def check_topup_callback(call: CallbackQuery):
         async with aiosqlite.connect(database.DB_PATH) as db:
             await db.execute('UPDATE transactions SET status = ? WHERE id = ?', ("success", tx[0]))
             await db.commit()
-        await call.message.edit_text(f"✅ Баланс пополнен на {tx[2]:.2f} руб.", reply_markup=None)
+        await call.message.edit_text(f"✅<b>Принято! Баланс пополнен на {tx[2]:.2f} руб.</b>", reply_markup=None, parse_mode="HTML")
         await call.message.answer("Теперь вы можете заказывать услуги.")
     else:
-        await call.message.answer(f"❌ Платёж ещё не оплачен (статус: {status}). Попробуйте позже.")
+        await call.message.answer(
+            f"<b>❌Платёж не оплачен, попробуйте позже.\nЕсли вы оплатили, но ошибка повторяется, напишите техподдержке бота: </b>@nBoost_supports",
+            parse_mode="HTML"
+        )
 
 # ====== ЗАКАЗ ======
 @dp.callback_query(F.data == "order")
@@ -411,6 +421,7 @@ async def order_menu(call: CallbackQuery):
         [InlineKeyboardButton(text="Подписчики", callback_data="subscribers")],
         [InlineKeyboardButton(text="Просмотры", callback_data="views")],
         [InlineKeyboardButton(text="Реакции", callback_data="reactions")],
+        [InlineKeyboardButton(text="Старты", callback_data="starts")],
         [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="back_to_main")]
     ]
 
@@ -454,6 +465,7 @@ async def order_menu(call: CallbackQuery):
                 kb.button(text="Подписчики", callback_data="subscribers")
                 kb.button(text="Просмотры", callback_data="views")
                 kb.button(text="Реакции", callback_data="reactions")
+                kb.button(text="Старты", callback_data="starts")
                 kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
                 kb.adjust(1)
                 await call.message.answer(
@@ -518,6 +530,15 @@ async def choose_reactions(call: CallbackQuery, state: FSMContext):
     )
     await state.set_state(ReactionsType.waiting_reaction_type)
 
+@dp.callback_query(F.data == "starts")
+async def choose_starts(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    if await check_ban_and_terms(call.from_user.id):
+        return
+    await state.update_data(service="starts")
+    await call.message.edit_text(f"Введите количество стартов (минимум {STARTS_MIN}):")
+    await state.set_state(OrderState.waiting_quantity)
+
 # ====== ОБРАБОТЧИКИ ДЛЯ ПОДПИСЧИКОВ ======
 @dp.callback_query(SubscribersDuration.waiting_duration, F.data.startswith("sub_dur_"))
 async def process_subscribers_duration(call: CallbackQuery, state: FSMContext):
@@ -569,7 +590,6 @@ async def process_reaction_type(call: CallbackQuery, state: FSMContext):
     await state.update_data(reaction_type_key=type_key, reaction_type_name=type_name)
 
     if type_key == "emoji_list":
-        # Показываем все эмодзи в одной странице
         kb = InlineKeyboardBuilder()
         for emoji in EMOJI_LIST:
             kb.button(text=emoji, callback_data=f"react_emoji_{emoji}")
@@ -613,6 +633,10 @@ async def get_quantity(message: Message, state: FSMContext):
             return await message.answer(f"Минимальное количество для выбранной длительности — {min_q}.")
         price_per_100 = data.get("price_per_100")
         price = (quantity / 100) * price_per_100
+    elif service == "starts":
+        if quantity < STARTS_MIN:
+            return await message.answer(f"Минимальное количество стартов — {STARTS_MIN}.")
+        price = quantity * STARTS_PRICE
     elif service in ("views", "reactions"):
         if quantity < 1:
             return await message.answer("Минимальное количество — 1.")
@@ -663,10 +687,6 @@ async def get_link(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    # Списываем средства
-    await database.update_balance(message.from_user.id, -price)
-    new_balance = balance - price
-
     # Формируем описание для комментария
     if service == "subscribers":
         comment = f"Подписчики, длительность: {data['subtype']}"
@@ -674,9 +694,12 @@ async def get_link(message: Message, state: FSMContext):
         comment = f"Реакции, тип: {data['reaction_type_name']}"
         if data.get('reaction_type_key') == 'emoji_list' and 'selected_emoji' in data:
             comment += f", эмодзи: {data['selected_emoji']}"
+    elif service == "starts":
+        comment = f"Старты"
     else:  # views
         comment = "Просмотры"
 
+    # Создаём заказ в статусе WAITING_CONFIRM
     try:
         await database.create_order(
             order_id=order_id,
@@ -685,40 +708,106 @@ async def get_link(message: Message, state: FSMContext):
             quantity=quantity,
             price=price,
             link=link,
-            status="PAID",  # Сразу оплачено
+            status="WAITING_CONFIRM",
             comment=comment
         )
     except Exception as e:
         logging.error(f"DB error: {e}")
-        await message.answer("Ошибка при создании заказа. Средства не списаны.")
-        # Восстанавливаем баланс
-        await database.update_balance(message.from_user.id, price)
+        await message.answer("Ошибка при создании заказа. Попробуйте позже.")
         return await state.clear()
-
-    # Уведомляем пользователя
-    await message.answer(
-        f"✅ Заказ №{order_id} успешно оформлен!\n\n"
-        f"{comment}\n"
-        f"Количество: {quantity}\n"
-        f"Сумма: {price:.2f} руб.\n"
-        f"Ссылка: {link}\n\n"
-        f"💰 Новый баланс: {new_balance:.2f} руб.\n\n"
-        "Ваш заказ передан в работу. Ожидайте выполнения."
-    )
 
     # Уведомляем администраторов
     admins = await database.get_all_admins()
     for admin in admins:
         try:
+            kb = InlineKeyboardBuilder()
+            kb.button(text="✅ Подтвердить", callback_data=f"confirm_{order_id}")
+            kb.button(text="❌ Отклонить", callback_data=f"reject_{order_id}")
             await bot.send_message(
                 admin,
-                f"📦 Новый заказ №{order_id} от {message.from_user.id}\n"
-                f"Услуга: {comment}\nКоличество: {quantity}\nСумма: {price:.2f} руб.\nСсылка: {link}"
+                f"📦 Новый заказ №{order_id} ожидает подтверждения от {message.from_user.id}\n"
+                f"Услуга: {comment}\nКоличество: {quantity}\nСумма: {price:.2f} руб.\nСсылка: {link}",
+                reply_markup=kb.as_markup()
             )
         except Exception as e:
             logging.error(f"Failed to notify admin {admin}: {e}")
 
+    await message.answer(
+        f"✅ Заказ №{order_id} создан и отправлен на подтверждение администратору.\n"
+        f"После подтверждения средства будут списаны с баланса, и заказ начнёт выполняться.\n"
+        f"Ожидайте уведомления."
+    )
     await state.clear()
+
+# ====== ПОДТВЕРЖДЕНИЕ ЗАКАЗА ======
+@dp.callback_query(F.data.startswith("confirm_"))
+async def confirm_order(call: CallbackQuery):
+    await call.answer()
+    if not await database.is_admin(call.from_user.id):
+        return
+    order_id = call.data.split("_")[1]
+    order = await database.get_order(order_id)
+    if not order:
+        return await call.message.answer("Заказ не найден.")
+    if order[6] != "WAITING_CONFIRM":
+        return await call.message.answer("Этот заказ уже обработан.")
+
+    user_id = order[1]
+    price = order[4]
+    quantity = order[3]
+    service = order[2]
+    comment = order[7]
+    link = order[5]
+
+    # Списываем средства
+    balance = await database.get_balance(user_id)
+    if balance < price:
+        await database.update_order_status(order_id, "DECLINED", "Недостаточно средств на момент подтверждения")
+        await call.message.edit_text("❌ У пользователя недостаточно средств. Заказ отклонён.", reply_markup=None)
+        await bot.send_message(user_id, "❌ Ваш заказ был отклонён из-за недостатка средств на балансе.")
+        return
+
+    await database.update_balance(user_id, -price)
+    await database.update_order_status(order_id, "PAID", "Подтверждён администратором")
+
+    new_balance = balance - price
+
+    # Уведомляем пользователя
+    try:
+        await bot.send_message(
+            user_id,
+            f"✅ Заказ №{order_id} подтверждён!\n\n"
+            f"{comment}\nКоличество: {quantity}\nСумма: {price:.2f} руб.\nСсылка: {link}\n\n"
+            f"💰 Новый баланс: {new_balance:.2f} руб.\n\n"
+            "Ваш заказ передан в работу. Ожидайте выполнения."
+        )
+    except TelegramForbiddenError:
+        logging.warning(f"User {user_id} blocked the bot.")
+
+    await call.message.edit_text(f"✅ Заказ №{order_id} подтверждён. Средства списаны.", reply_markup=None)
+
+@dp.callback_query(F.data.startswith("reject_"))
+async def reject_order(call: CallbackQuery):
+    await call.answer()
+    if not await database.is_admin(call.from_user.id):
+        return
+    order_id = call.data.split("_")[1]
+    order = await database.get_order(order_id)
+    if not order:
+        return await call.message.answer("Заказ не найден.")
+    if order[6] != "WAITING_CONFIRM":
+        return await call.message.answer("Этот заказ уже обработан.")
+
+    user_id = order[1]
+    price = order[4]
+
+    await database.update_order_status(order_id, "DECLINED", "Отклонён администратором")
+    try:
+        await bot.send_message(user_id, f"❌ Ваш заказ №{order_id} был отклонён администратором.")
+    except TelegramForbiddenError:
+        logging.warning(f"User {user_id} blocked the bot.")
+
+    await call.message.edit_text(f"❌ Заказ №{order_id} отклонён.", reply_markup=None)
 
 # ====== ФУНКЦИИ ПЛАТЕЖЕЙ (ЮKassa) ======
 async def create_yookassa_payment(amount: float, description: str, order_id: str, user_id: int):
@@ -835,6 +924,7 @@ async def calc_menu(call: CallbackQuery):
         [InlineKeyboardButton(text="Подписчики", callback_data="calc_subscribers")],
         [InlineKeyboardButton(text="Просмотры", callback_data="calc_views")],
         [InlineKeyboardButton(text="Реакции", callback_data="calc_reactions")],
+        [InlineKeyboardButton(text="Старты", callback_data="calc_starts")],
         [InlineKeyboardButton(text="◀️ Вернуться назад", callback_data="back_to_main")]
     ]
 
@@ -876,6 +966,7 @@ async def calc_menu(call: CallbackQuery):
                 kb.button(text="Подписчики", callback_data="calc_subscribers")
                 kb.button(text="Просмотры", callback_data="calc_views")
                 kb.button(text="Реакции", callback_data="calc_reactions")
+                kb.button(text="Старты", callback_data="calc_starts")
                 kb.button(text="◀️ Вернуться назад", callback_data="back_to_main")
                 kb.adjust(1)
                 await call.message.answer(
@@ -922,6 +1013,10 @@ async def calc_choose(call: CallbackQuery, state: FSMContext):
             reply_markup=kb.as_markup()
         )
         await state.set_state(CalcState.waiting_reaction_type)
+
+    elif service == "starts":
+        await call.message.answer(f"Введите количество стартов (минимум {STARTS_MIN}):")
+        await state.set_state(CalcState.waiting_quantity)
 
     else:  # views
         await call.message.answer("Введите количество просмотров:")
@@ -973,6 +1068,11 @@ async def calc_result(message: Message, state: FSMContext):
         price = (quantity / 100) * price_per_100
         duration = data.get("duration", "")
         await message.answer(f"💰 Стоимость {quantity} подписчиков на {duration}: {price:.2f} руб.")
+    elif service == "starts":
+        if quantity < STARTS_MIN:
+            return await message.answer(f"Минимальное количество стартов — {STARTS_MIN}.")
+        price = quantity * STARTS_PRICE
+        await message.answer(f"💰 Стоимость {quantity} стартов: {price:.2f} руб.")
     elif service == "views":
         if quantity < 1:
             return await message.answer("Минимальное количество — 1.")
@@ -1137,18 +1237,41 @@ async def is_admin_from_db_or_config(user_id: int) -> bool:
     return await database.is_admin(user_id)
 
 @dp.message(Command("ban"))
-async def ban_cmd(message: Message):
+async def ban_cmd(message: Message, state: FSMContext):
     if not await is_admin_from_db_or_config(message.from_user.id):
         return
     args = message.text.split()
     if len(args) < 2:
-        return await message.answer("Использование: /ban <user_id>")
+        return await message.answer("Использование: /ban <user_id> [причина]")
     try:
         user_id = int(args[1])
     except ValueError:
         return await message.answer("ID должен быть числом.")
-    await database.ban_user(user_id)
-    await message.answer(f"Пользователь {user_id} забанен.")
+    if len(args) >= 3:
+        reason = " ".join(args[2:])
+        await database.ban_user(user_id, message.from_user.id, reason)
+        await message.answer(f"Пользователь {user_id} забанен.\nПричина: {reason}")
+        try:
+            await bot.send_message(user_id, f"❌ Вы заблокированы.\nПричина: {reason}")
+        except:
+            pass
+    else:
+        await state.update_data(ban_user_id=user_id)
+        await message.answer("Введите причину бана:")
+        await state.set_state(BanReason.waiting_reason)
+
+@dp.message(BanReason.waiting_reason)
+async def ban_reason(message: Message, state: FSMContext):
+    data = await state.get_data()
+    user_id = data.get("ban_user_id")
+    reason = message.text.strip()
+    await database.ban_user(user_id, message.from_user.id, reason)
+    await message.answer(f"Пользователь {user_id} забанен.\nПричина: {reason}")
+    try:
+        await bot.send_message(user_id, f"❌ Вы заблокированы.\nПричина: {reason}")
+    except:
+        pass
+    await state.clear()
 
 @dp.message(Command("unban"))
 async def unban_cmd(message: Message):
@@ -1163,6 +1286,104 @@ async def unban_cmd(message: Message):
         return await message.answer("ID должен быть числом.")
     await database.unban_user(user_id)
     await message.answer(f"Пользователь {user_id} разбанен.")
+    try:
+        await bot.send_message(user_id, "✅ Вы разблокированы. Теперь вы можете пользоваться ботом.")
+    except:
+        pass
+
+@dp.message(Command("checkban"))
+async def check_ban(message: Message):
+    if not await is_admin_from_db_or_config(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.answer("Использование: /checkban <user_id>")
+    try:
+        user_id = int(args[1])
+    except ValueError:
+        return await message.answer("ID должен быть числом.")
+    ban_info = await database.get_ban_info(user_id)
+    if not ban_info or ban_info[0] == 0:
+        await message.answer(f"Пользователь {user_id} не забанен.")
+        return
+    banned_by = ban_info[1] or "неизвестно"
+    banned_at = ban_info[2] or "неизвестно"
+    reason = ban_info[3] or "Не указана"
+    await message.answer(
+        f"🔍 Информация о бане пользователя {user_id}:\n"
+        f"Забанен: ✅\n"
+        f"Кто забанил: {banned_by}\n"
+        f"Дата: {banned_at}\n"
+        f"Причина: {reason}"
+    )
+
+@dp.message(Command("checkpay"))
+async def check_pay(message: Message):
+    if not await is_admin_from_db_or_config(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        return await message.answer("Использование: /checkpay <user_id>")
+    try:
+        user_id = int(args[1])
+    except ValueError:
+        return await message.answer("ID должен быть числом.")
+    txs = await database.get_transactions(user_id, 20)
+    if not txs:
+        await message.answer(f"У пользователя {user_id} нет транзакций.")
+        return
+    text = f"📜 История транзакций пользователя {user_id} (последние 20):\n"
+    for tx in txs:
+        status_emoji = "✅" if tx[4] == "success" else "❌"
+        text += f"{status_emoji} {tx[6][:10]} {tx[2]:+.2f} руб. ({tx[3]})\n"
+    await message.answer(text)
+
+@dp.message(Command("help"))
+async def help_command(message: Message):
+    await message.answer(
+        "ℹ️ <b>Помощь по боту</b>\n\n"
+        "Для связи с технической поддержкой используйте кнопку «Тех. Поддержка» в главном меню или напишите @nBoost_supports.\n\n"
+        "Основные команды:\n"
+        "/start — запуск бота и главное меню\n"
+        "/help — эта справка\n"
+        "Все остальные действия доступны через кнопки в интерфейсе.",
+        parse_mode="HTML"
+    )
+
+@dp.message(Command("helpadmin"))
+async def help_admin(message: Message):
+    if not await is_admin_from_db_or_config(message.from_user.id):
+        return
+    text = """
+<b>👑 Административные команды:</b>
+
+<b>Управление пользователями:</b>
+/ban <id> [причина] — заблокировать пользователя
+/unban <id> — разблокировать пользователя
+/checkban <id> — проверить статус бана
+
+<b>Управление заказами:</b>
+/stop <order_id> [причина] — остановить заказ (возврат средств)
+/search <order_id> — поиск заказа
+
+<b>Управление балансом:</b>
+/addbalance <id> <сумма> — добавить средства на баланс
+/setbalance <id> <сумма> — установить баланс
+
+<b>Управление ботом:</b>
+/stopbot [причина] — временно отключить бот для всех
+/startbot — включить бот
+/all — массовая рассылка
+
+<b>Управление админами:</b>
+/addadmin <id> — добавить администратора (только владелец)
+/deladmin <id> — удалить администратора (только владелец)
+
+<b>Просмотр:</b>
+/checkpay <id> — история транзакций пользователя
+/fixdb — диагностика структуры БД
+"""
+    await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("search"))
 async def search_order(message: Message):
@@ -1180,6 +1401,7 @@ async def search_order(message: Message):
     status_text = {
         "NEW": "🆕 Новый",
         "PENDING": "⏳ Ожидает оплаты",
+        "WAITING_CONFIRM": "🕒 Ожидает подтверждения",
         "PAID": "✅ Оплачен",
         "ACCEPTED": "📦 Принят в работу",
         "DECLINED": "❌ Отклонён"
@@ -1194,6 +1416,8 @@ async def search_order(message: Message):
         service_info = "Реакции"
         if order[7]:
             service_info += f" ({order[7]})"
+    elif order[2] == "starts":
+        service_info = "Старты"
     elif order[2] == "views":
         service_info = "Просмотры"
 
@@ -1329,8 +1553,8 @@ async def stop_order(message: Message, state: FSMContext):
     order = await database.get_order(order_id)
     if not order:
         return await message.answer("❌ Заказ не найден.")
-    if order[6] not in ("PAID", "ACCEPTED"):
-        return await message.answer("❌ Можно остановить только оплаченный или принятый заказ.")
+    if order[6] not in ("PAID", "ACCEPTED", "WAITING_CONFIRM"):
+        return await message.answer("❌ Можно остановить только оплаченный, принятый или ожидающий подтверждения заказ.")
     if len(args) >= 3:
         reason = " ".join(args[2:])
         await process_stop_order(message, order, reason)
@@ -1351,15 +1575,17 @@ async def process_stop_order(message: Message, order, reason: str):
     order_id = order[0]
     user_id = order[1]
     price = order[4]
-    # Возвращаем средства
-    await database.update_balance(user_id, price)
+    # Возвращаем средства, если они были списаны
+    if order[6] in ("PAID", "ACCEPTED"):
+        await database.update_balance(user_id, price)
     # Обновляем статус заказа
     await database.update_order_status(order_id, "DECLINED", f"Остановлен администратором: {reason}")
     # Уведомляем пользователя
     try:
         await bot.send_message(
             user_id,
-            f"❌ Ваш заказ №{order_id} был остановлен администратором.\nПричина: {reason}\nСредства ({price:.2f} руб.) возвращены на баланс."
+            f"❌ Ваш заказ №{order_id} был остановлен администратором.\nПричина: {reason}\n"
+            + ("Средства возвращены на баланс." if order[6] in ("PAID", "ACCEPTED") else "Средства не списывались.")
         )
     except TelegramForbiddenError:
         logging.warning(f"User {user_id} blocked the bot.")
@@ -1380,9 +1606,10 @@ async def fixdb_command(message: Message):
     except Exception as e:
         await message.answer(f"Ошибка: {e}")
 
-# ====== ОБРАБОТЧИКИ ПРИНЯТИЯ/ОТКЛОНЕНИЯ ======
+# ====== ОБРАБОТЧИКИ ПРИНЯТИЯ/ОТКЛОНЕНИЯ (устаревшие, можно оставить для совместимости) ======
 @dp.callback_query(F.data.startswith("accept_"))
-async def accept_order(call: CallbackQuery):
+async def accept_order_legacy(call: CallbackQuery):
+    # Этот обработчик оставлен для обратной совместимости с более старыми заказами
     await call.answer()
     if not await database.is_admin(call.from_user.id):
         return
@@ -1401,7 +1628,7 @@ async def accept_order(call: CallbackQuery):
     await call.message.answer("Заказ подтверждён.")
 
 @dp.callback_query(F.data.startswith("decline_"))
-async def decline_order_start(call: CallbackQuery, state: FSMContext):
+async def decline_order_start_legacy(call: CallbackQuery, state: FSMContext):
     await call.answer()
     if not await database.is_admin(call.from_user.id):
         return
@@ -1416,7 +1643,7 @@ async def decline_order_start(call: CallbackQuery, state: FSMContext):
     await state.set_state(DeclineReason.waiting_reason)
 
 @dp.message(DeclineReason.waiting_reason)
-async def decline_order_reason(message: Message, state: FSMContext):
+async def decline_order_reason_legacy(message: Message, state: FSMContext):
     if not await database.is_admin(message.from_user.id):
         return await state.clear()
     reason = message.text.strip()
