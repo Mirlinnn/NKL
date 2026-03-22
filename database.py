@@ -5,18 +5,21 @@ DB_PATH = "bot_database.db"
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
-        # Таблица пользователей
+        # Таблица пользователей с полем balance
         await db.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
-                banned INTEGER DEFAULT 0
+                banned INTEGER DEFAULT 0,
+                accepted_terms INTEGER DEFAULT 0,
+                balance REAL DEFAULT 0
             )
         ''')
+        # Проверяем наличие колонки balance
         try:
-            await db.execute('SELECT accepted_terms FROM users LIMIT 1')
+            await db.execute('SELECT balance FROM users LIMIT 1')
         except aiosqlite.OperationalError:
-            await db.execute('ALTER TABLE users ADD COLUMN accepted_terms INTEGER DEFAULT 0')
-            logging.info("Column 'accepted_terms' added to users table.")
+            await db.execute('ALTER TABLE users ADD COLUMN balance REAL DEFAULT 0')
+            logging.info("Column 'balance' added to users table.")
 
         # Таблица заказов
         await db.execute('''
@@ -35,27 +38,26 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        # Проверяем наличие всех колонок и добавляем при необходимости
-        try:
-            await db.execute('SELECT payment_id FROM orders LIMIT 1')
-        except aiosqlite.OperationalError:
-            await db.execute('ALTER TABLE orders ADD COLUMN payment_id TEXT')
-            logging.info("Column 'payment_id' added to orders table.")
-        try:
-            await db.execute('SELECT payment_charge_id FROM orders LIMIT 1')
-        except aiosqlite.OperationalError:
-            await db.execute('ALTER TABLE orders ADD COLUMN payment_charge_id TEXT')
-            logging.info("Column 'payment_charge_id' added to orders table.")
-        try:
-            await db.execute('SELECT payment_method FROM orders LIMIT 1')
-        except aiosqlite.OperationalError:
-            await db.execute('ALTER TABLE orders ADD COLUMN payment_method TEXT')
-            logging.info("Column 'payment_method' added to orders table.")
-        try:
-            await db.execute('SELECT comment FROM orders LIMIT 1')
-        except aiosqlite.OperationalError:
-            await db.execute('ALTER TABLE orders ADD COLUMN comment TEXT')
-            logging.info("Column 'comment' added to orders table.")
+        # Проверяем наличие всех колонок
+        for col in ['payment_id', 'payment_charge_id', 'payment_method', 'comment']:
+            try:
+                await db.execute(f'SELECT {col} FROM orders LIMIT 1')
+            except aiosqlite.OperationalError:
+                await db.execute(f'ALTER TABLE orders ADD COLUMN {col} TEXT')
+                logging.info(f"Column '{col}' added to orders table.")
+
+        # Таблица транзакций (история пополнений)
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                amount REAL,
+                method TEXT,
+                status TEXT,
+                payment_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
 
         # Таблица администраторов
         await db.execute('''
@@ -72,6 +74,23 @@ async def add_user(user_id: int):
         await db.execute('INSERT OR IGNORE INTO users (user_id) VALUES (?)', (user_id,))
         await db.commit()
 
+async def get_balance(user_id: int) -> float:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('SELECT balance FROM users WHERE user_id = ?', (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0.0
+
+async def update_balance(user_id: int, amount: float):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (amount, user_id))
+        await db.commit()
+
+async def set_balance(user_id: int, amount: float):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('UPDATE users SET balance = ? WHERE user_id = ?', (amount, user_id))
+        await db.commit()
+
+# Остальные функции пользователей (banned, accepted_terms) остаются без изменений
 async def is_banned(user_id: int) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute('SELECT banned FROM users WHERE user_id = ?', (user_id,)) as cursor:
@@ -114,14 +133,6 @@ async def create_order(order_id: str, user_id: int, service: str, quantity: int,
         )
         await db.commit()
 
-async def create_order_with_payment(order_id: str, user_id: int, service: str, quantity: int, price: float, link: str, payment_id: str, status: str = "PENDING", comment: str = None, payment_method: str = None):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            'INSERT INTO orders (order_id, user_id, service, quantity, price, link, status, comment, payment_id, payment_method) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (order_id, user_id, service, quantity, price, link, status, comment, payment_id, payment_method)
-        )
-        await db.commit()
-
 async def get_order(order_id: str):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute('SELECT * FROM orders WHERE order_id = ?', (order_id,)) as cursor:
@@ -151,17 +162,26 @@ async def update_order_payment_method(order_id: str, method: str):
         )
         await db.commit()
 
-async def update_order_payment_charge_id(order_id: str, charge_id: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            'UPDATE orders SET payment_charge_id = ? WHERE order_id = ?',
-            (charge_id, order_id)
-        )
-        await db.commit()
-
 async def get_pending_orders():
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute('SELECT * FROM orders WHERE status = ?', ("PENDING",)) as cursor:
+            return await cursor.fetchall()
+
+# ====== Транзакции ======
+async def add_transaction(user_id: int, amount: float, method: str, status: str, payment_id: str = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            'INSERT INTO transactions (user_id, amount, method, status, payment_id) VALUES (?, ?, ?, ?, ?)',
+            (user_id, amount, method, status, payment_id)
+        )
+        await db.commit()
+
+async def get_transactions(user_id: int, limit: int = 10):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            'SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
+            (user_id, limit)
+        ) as cursor:
             return await cursor.fetchall()
 
 # ====== Администраторы ======
