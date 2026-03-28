@@ -1672,8 +1672,8 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
                 f"Сумма: {data['price']:.2f} руб.\n"
                 f"Ссылка: {data['link']}"
             )
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Failed to notify admin {admin}: {e}")
     
     await state.clear()
 
