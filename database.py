@@ -30,7 +30,8 @@ async def init_db():
                 speed INTEGER DEFAULT 2,
                 description TEXT,
                 min_quantity INTEGER,
-                max_quantity INTEGER
+                max_quantity INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         # Таблица промокодов
@@ -43,7 +44,7 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        # Таблица заказов (добавляем service_id и promocode)
+        # Таблица заказов
         await db.execute('''
             CREATE TABLE IF NOT EXISTS orders (
                 order_id TEXT PRIMARY KEY,
@@ -61,7 +62,7 @@ async def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        # Таблица транзакций (пополнения)
+        # Таблица транзакций
         await db.execute('''
             CREATE TABLE IF NOT EXISTS transactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,7 +175,7 @@ async def get_all_users():
             return [row[0] for row in rows]
 
 # ====== Услуги ======
-async def add_service(platform, category, subcategory, name, price, min_q, max_q, speed=2, description=""):
+async def add_service(platform: str, category: str, subcategory: str, name: str, price: float, min_q: int, max_q: int, speed: int = 2, description: str = ""):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             'INSERT INTO services (platform, category, subcategory, name, price, min_quantity, max_quantity, speed, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
