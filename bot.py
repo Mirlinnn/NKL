@@ -1623,23 +1623,23 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
     if data.get('order_id') != order_id:
         await call.message.answer("Ошибка: заказ не найден.")
         return
-    
+
     # Списываем средства
     balance = await database.get_balance(call.from_user.id)
     if balance < data['price']:
         await call.message.answer("❌ Недостаточно средств. Пополните баланс.")
         return
     await database.update_balance(call.from_user.id, -data['price'])
-    
+
     # Сохраняем заказ в БД
     service_desc = data.get('service_name', 'Услуга')
     if data.get('subtype'):
         service_desc += f" ({data['subtype']})"
-    
+
     await database.create_order(
         order_id=order_id,
         user_id=call.from_user.id,
-        service_id=0,  # временно, позже привяжем к таблице услуг
+        service_id=0,
         quantity=data['quantity'],
         price=data['price'],
         link=data['link'],
@@ -1647,8 +1647,7 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
         comment=service_desc,
         promocode=data.get('promocode')
     )
-    
-    # Уведомляем пользователя
+
     new_balance = balance - data['price']
     await call.message.edit_text(
         f"✅ Заказ №{order_id} успешно оформлен!\n\n"
@@ -1659,8 +1658,7 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
         f"💰 Новый баланс: {new_balance:.2f} руб.\n\n"
         "Ваш заказ передан в работу. Ожидайте выполнения."
     )
-    
-    # Уведомляем администраторов
+
     admins = await database.get_all_admins()
     for admin in admins:
         try:
@@ -1674,7 +1672,7 @@ async def confirm_order(call: CallbackQuery, state: FSMContext):
             )
         except Exception as e:
             logging.error(f"Failed to notify admin {admin}: {e}")
-    
+
     await state.clear()
 
 # ====== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ АДМИНОВ ======
