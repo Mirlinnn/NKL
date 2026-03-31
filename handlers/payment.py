@@ -8,6 +8,7 @@ import hashlib
 import json
 import aiohttp
 import uuid
+from bot_instance import bot
 
 from config import YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, YOOKASSA_RETURN_URL
 from config import HELEKET_MERCHANT_ID, HELEKET_API_KEY, HELEKET_API_URL, HELEKET_RETURN_URL
