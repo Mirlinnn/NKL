@@ -6,6 +6,7 @@ from aiogram.exceptions import TelegramForbiddenError
 import logging
 import asyncio
 from datetime import datetime, timedelta
+from bot_instance import bot
 
 from config import OWNER_ID, ADMINS as STATIC_ADMINS
 import database as db
