@@ -35,4 +35,4 @@ class ServiceState(StatesGroup):
     waiting_service_id = State()
     waiting_price = State()
     waiting_speed = State()
-    waiting_text = State().
+    waiting_text = State()  # ← убрать точку после State()
