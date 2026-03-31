@@ -4,7 +4,7 @@ from .core import DB_PATH
 
 logger = logging.getLogger(__name__)
 
-async def create_settings_table(conn):
+async def init_settings_table(conn):
     """Создаёт таблицу settings, если её нет."""
     await conn.execute('''
         CREATE TABLE IF NOT EXISTS settings (
