@@ -6,6 +6,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 import json
 import aiohttp
 import logging
+from bot_instance import bot
 
 from config import BOT_TOKEN, OWNER_ID, PHOTO_PATH  # добавить OWNER_ID
 import database as db
