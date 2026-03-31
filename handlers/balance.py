@@ -4,6 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import logging
 import uuid
+from bot_instance import bot
 
 from states.states import BalanceTopup
 import database as db
