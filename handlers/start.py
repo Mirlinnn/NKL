@@ -7,7 +7,7 @@ import json
 import aiohttp
 import logging
 
-from config import BOT_TOKEN, PHOTO_PATH
+from config import BOT_TOKEN, OWNER_ID, PHOTO_PATH  # добавить OWNER_ID
 import database as db
 from keyboards.main import get_main_keyboard
 from states.states import OrderState
