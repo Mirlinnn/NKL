@@ -7,7 +7,7 @@ import logging
 import asyncio
 from datetime import datetime, timedelta
 
-from config import OWNER_ID, STATIC_ADMINS
+from config import OWNER_ID, ADMINS as STATIC_ADMINS
 import database as db
 from states.states import BanReason, StopOrderReason, BroadcastState
 from utils.helpers import is_owner, is_admin_from_db_or_config
