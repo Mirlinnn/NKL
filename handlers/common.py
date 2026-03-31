@@ -2,6 +2,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 import logging
+from bot_instance import bot
 
 from states.states import OrderState
 from keyboards import get_back_keyboard
