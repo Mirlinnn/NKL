@@ -52,3 +52,12 @@ async def faq(call: CallbackQuery):
     """
     kb = get_back_keyboard()
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+@router.callback_query(F.data == "back_to_main")
+async def back_to_main(call: CallbackQuery):
+    await call.answer()
+    try:
+        await call.message.delete()
+    except:
+        pass
+    await show_main_menu(call.from_user.id)
