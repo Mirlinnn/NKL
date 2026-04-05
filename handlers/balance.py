@@ -81,7 +81,7 @@ async def topup_amount(message: Message, state: FSMContext):
 async def create_heleket_topup(message: Message, state: FSMContext, amount: float):
     try:
         payment_result = await create_heleket_payment(
-            amount_rub=amount,
+            amount=amount,
             order_id=f"topup_{message.from_user.id}_{uuid.uuid4().hex[:8]}",
             description=f"Пополнение баланса на {amount} руб.",
             user_id=message.from_user.id
