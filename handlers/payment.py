@@ -74,7 +74,7 @@ async def create_heleket_payment(amount: float, order_id: str, description: str,
     """
     payload = {
         "amount": f"{amount:.2f}",
-        "currency": "USDT",           # фиатная валюта счёта
+        "currency": "RUB",           # фиатная валюта счёта
         "to_currency": "RUB",       # криптовалюта для оплаты
         "order_id": order_id,
         # "course_source": "Binance", # опционально: источник курса
