@@ -117,15 +117,21 @@ async def create_heleket_topup(message: Message, state: FSMContext, amount: floa
         )
         payment_uuid = payment_result.get('uuid')
         payment_url = payment_result.get('url')
+        payer_amount = payment_result.get('payer_amount')      # сумма в USDT
+        payer_currency = payment_result.get('payer_currency')  # "USDT"
         if not payment_uuid or not payment_url:
             raise Exception("Missing payment data")
         await db.add_transaction(message.from_user.id, amount, "heleket", "pending", payment_uuid)
         kb = InlineKeyboardBuilder()
-        kb.button(text="Криптовалюта", url=payment_url)
-        kb.button(text="✅ Я оплатил!", callback_data=f"check_topup_{payment_uuid}")
+        kb.button(text="₿ Оплатить криптовалютой", url=payment_url)
+        kb.button(text="✅ Проверить оплату", callback_data=f"check_topup_{payment_uuid}")
+        # Формируем сообщение с суммой в USDT
+        if payer_amount and payer_currency:
+            text = f"Создан счёт на пополнение баланса на {amount:.2f} руб.\nК оплате: {payer_amount} {payer_currency}\nПосле оплаты нажмите «Проверить оплату»."
+        else:
+            text = f"Создан счёт на пополнение баланса на {amount:.2f} руб. (эквивалент в USDT).\nПосле оплаты нажмите «Проверить оплату»."
         await message.answer(
-            f"Создан счёт на пополнение баланса на {amount:.2f} руб.\n"
-            "После оплаты нажмите на кнопку «Я оплатил!».",
+            text,
             reply_markup=kb.as_markup(),
             disable_web_page_preview=True
         )
